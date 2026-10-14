@@ -98,7 +98,7 @@ jobs:
         working-directory: databricks
         run: |
           set +e
-          out=$(databricks bundle run pdoom \
+          out=$(databricks bundle run pdoom_app \
             --var="catalog=$CATALOG" --var="schema=$SCHEMA" --var="app_principal=${DATABRICKS_CLIENT_ID}" \
             --var="warehouse_id=$WAREHOUSE" --var="app_name=$APP_NAME" 2>&1)
           code=$?

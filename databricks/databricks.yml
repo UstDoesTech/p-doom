@@ -38,13 +38,13 @@ resources:
             - CREATE_TABLE
             - SELECT
             - MODIFY
-        - principal: ${resources.apps.pdoom.service_principal_client_id}
+        - principal: ${resources.apps.pdoom_app.service_principal_client_id}
           privileges:
             - USE_SCHEMA
             - SELECT
             - MODIFY
   apps:
-    pdoom:
+    pdoom_app:
       name: ${var.app_name}
       description: Play Doom as many kinds of player and record p(doom) in Databricks
       source_code_path: ${var.app_source}
