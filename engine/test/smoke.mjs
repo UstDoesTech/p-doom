@@ -56,7 +56,7 @@ async function experiment(name, body, query = "") {
   const out = { samples: [], errors: [] };
   report.experiments[name] = out;
   const page = await browser.newPage();
-  page.on("pageerror", (e) => out.errors.push(String(e).slice(0, 160)));
+  page.on("pageerror", (e) => out.errors.push(String(e.stack || e).replace(/\s+/g, " ").slice(0, 900)));
   const consoleLines = [];
   page.on("console", (m) => {
     const t = m.text();
@@ -104,33 +104,27 @@ async function experiment(name, body, query = "") {
   }
 }
 
-// A real game start freezes the page under the original browser flags. Try other GL set-ups.
-const setups = {
-  default_headless: { args: [] },
-  angle_swiftshader: { args: ["--use-angle=swiftshader", "--enable-unsafe-swiftshader"] },
-  angle_swiftshader_novsync: {
-    args: ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--disable-gpu-vsync"],
-  },
-  chromium_channel: { channel: "chromium", args: ["--enable-unsafe-swiftshader"] },
-  no_webgl_accel: { args: ["--disable-gpu", "--disable-accelerated-2d-canvas"] },
-};
-for (const [name, opts] of Object.entries(setups)) {
-  await killBrowser();
-  launchOpts = opts;
-  try {
-    browser = await launch();
-  } catch (e) {
-    report.experiments[name] = { errors: ["launch failed: " + String(e).slice(0, 120)], samples: [] };
-    continue;
+// The headless-shell browser freezes on a real game start; full Chromium reports a wasm trap.
+// Use full Chromium and read the trap's stack.
+await killBrowser();
+launchOpts = { channel: "chromium", args: ["--enable-unsafe-swiftshader"] };
+browser = await launch();
+await experiment("nowarp", async ({ sample, sleep }) => {
+  await sleep(6000);
+  for (let i = 0; i < 3; i++) {
+    await sample("t" + i, 7);
+    await sleep(1000);
   }
-  await experiment(name, async ({ sample, sleep }) => {
-    await sleep(5000);
-    for (let i = 0; i < 3; i++) {
-      await sample("t" + i, 0);
-      await sleep(1000);
-    }
-  });
-}
+}, "?nowarp=1");
+await killBrowser();
+browser = await launch();
+await experiment("warp", async ({ sample, sleep }) => {
+  await sleep(4000);
+  for (let i = 0; i < 2; i++) {
+    await sample("t" + i, 0);
+    await sleep(1000);
+  }
+});
 
 await killBrowser();
 server.close();
