@@ -23,7 +23,7 @@ const server = createServer(async (req, res) => {
 }).listen(0);
 const port = server.address().port;
 
-const report = { checks: {}, errors: [], stage: "start" };
+const report = { checks: {}, errors: [], stage: "start", console: [] };
 // A wedged page must not hang CI: report what we have and stop.
 setTimeout(() => {
   report.errors.push("watchdog: smoke test exceeded 200 s");
@@ -34,13 +34,23 @@ const browser = await chromium.launch({ args: ["--use-gl=swiftshader", "--enable
 try {
   var page = await browser.newPage();
   page.on("pageerror", (e) => report.errors.push(String(e).slice(0, 300)));
+  page.on("console", (m) => {
+    report.console.push(m.text().slice(0, 140));
+    if (report.console.length > 25) report.console.shift();
+  });
+  // Every page call gets its own timeout so a wedged page names the call that hung.
+  const ev = (label, fn, arg) =>
+    Promise.race([
+      page.evaluate(fn, arg),
+      new Promise((_, rej) => setTimeout(() => rej(new Error(`page call hung: ${label}`)), 15000)),
+    ]);
   report.stage = "goto";
   await page.goto(`http://localhost:${port}/`);
   report.stage = "wait runtime";
   await page.waitForFunction(() => window.engineReady, null, { timeout: 60000 });
 
   const state = () =>
-    page.evaluate(() => JSON.parse(Module.ccall("pdoom_get_state", "string", [], [])));
+    ev("get_state", () => JSON.parse(Module.ccall("pdoom_get_state", "string", [], [])));
   const waitPlayer = async () => {
     for (let i = 0; i < 120; i++) {
       const s = await state();
@@ -53,7 +63,8 @@ try {
   report.stage = "first player";
   await waitPlayer();
   report.stage = "new game";
-  await page.evaluate(() => Module.ccall("pdoom_new_game", null, ["number", "number", "number"], [1, 1, 42]));
+  await ev("new_game", () => Module.ccall("pdoom_new_game", null, ["number", "number", "number"], [1, 1, 42]));
+  report.stage = "after new game";
   await page.waitForTimeout(1500);
   const s0 = await waitPlayer();
   report.checks.level = s0.level;
