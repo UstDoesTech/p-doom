@@ -6,6 +6,8 @@ on:
     inputs:
       project_id: { default: pdoom }
       database: { default: pdoom }
+      catalog: { default: workspace }
+      schema: { default: pdoom }
   push:
     branches: [feat/lakebase, feat/lakebase-sink]
     paths: [.github/workflows/lakebase.yml, databricks/lakebase/**]
@@ -79,3 +81,19 @@ jobs:
           done
           cols=$(scripts/pg.sh -At -c "select table_name||'('||count(*)||')' from information_schema.columns where table_schema='pdoom' group by table_name order by 1" | paste -sd, -)
           echo "::notice title=tables::${cols}"
+      - name: Lakehouse sync to Unity Catalog
+        run: |
+          set +e
+          D="projects/$PROJECT/branches/production/databases/$DB"
+          existing=$(databricks postgres list-cdf-configs "$D" -o json 2>&1)
+          echo "::notice title=cdf configs before::$(printf '%s' "$existing" | tr '\n' ' ' | cut -c1-500)"
+          if ! printf '%s' "$existing" | jq -e 'length>0' >/dev/null 2>&1; then
+            out=$(databricks postgres create-cdf-config "$D" "${{ inputs.catalog || 'workspace' }}" "${{ inputs.schema || 'pdoom' }}" pdoom --cdf-config-id pdoom_sync -o json 2>&1)
+            echo "::notice title=create-cdf-config exit=$?::$(printf '%s' "$out" | tr '\n' ' ' | cut -c1-1200)"
+          fi
+          sleep 45
+          echo "::notice title=cdf configs after::$(databricks postgres list-cdf-configs "$D" -o json 2>&1 | tr '\n' ' ' | cut -c1-800)"
+          name=$(databricks postgres list-cdf-configs "$D" -o json 2>/dev/null | jq -r '.[0].name // empty')
+          echo "::notice title=cdf status by name::$(databricks postgres get-cdf-status "$name" -o json 2>&1 | tr '\n' ' ' | cut -c1-1200)"
+          st=$(databricks postgres list-cdf-statuses "$D" -o json 2>&1)
+          echo "::notice title=cdf status::$(printf '%s' "$st" | tr '\n' ' ' | cut -c1-1500)"

@@ -18,7 +18,7 @@ on:
       app_name:
         default: pdoom
   push:
-    branches: [feat/databricks-app, feat/lakebase-sink]
+    branches: [feat/databricks-app, feat/lakebase-sink, feat/rulebot-lakebase-only]
     paths: [.github/workflows/app.yml, scripts/**, databricks/**, web/**, backend/**]
 
 permissions:
