@@ -1,0 +1,34 @@
+"""Runtime settings, read from PDOOM_* environment variables or a local .env file.
+
+Databricks credentials are not read here. The Databricks SDK reads DATABRICKS_HOST,
+DATABRICKS_CLIENT_ID and DATABRICKS_CLIENT_SECRET itself.
+"""
+
+from functools import lru_cache
+from typing import Literal
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="PDOOM_", env_file=".env", extra="ignore")
+
+    warehouse_id: str = ""
+    uc_catalog: str = "main"
+    uc_schema: str = "pdoom"
+
+    sink: Literal["memory", "jsonl", "sql"] = "memory"
+    jsonl_path: str = "telemetry.jsonl"
+
+    model_version: str = "dev"
+    vision_endpoint: str = ""
+
+    static_dir: str = ""
+    cors_origins: list[str] = ["http://localhost:5173"]
+
+    session_ttl_s: int = 3600
+
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()

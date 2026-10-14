@@ -1,0 +1,35 @@
+{
+  "intent": {
+    "type": "choice",
+    "instructions": "Which action should the player take for the next second to survive and reach the level exit? Bearings are in degrees relative to where the player faces: negative is left, positive is right.",
+    "criteria": {
+      "advance": "Move forward toward the exit or the next unexplored area",
+      "turn_left": "Rotate left to face an enemy or an opening",
+      "turn_right": "Rotate right to face an enemy or an opening",
+      "strafe_left": "Sidestep left to dodge fire",
+      "strafe_right": "Sidestep right to dodge fire",
+      "fire": "Shoot the nearest visible enemy",
+      "retreat": "Back away from enemies, or toward a health pickup",
+      "use": "Open the nearest door or press the nearest switch"
+    }
+  },
+  "threat": {
+    "type": "noul",
+    "instructions": "Is an enemy likely to damage the player within the next two seconds?",
+    "criteria": {
+      "true": "An enemy has line of sight, is within attack range, or is closing in.",
+      "false": "No enemy has line of sight, or all are far away and not approaching."
+    }
+  },
+  "danger": {
+    "type": "score",
+    "instructions": "How dangerous is the player's situation right now?",
+    "criteria": [
+      "Safe: no enemies in view and health above 70",
+      "Watchful: enemies in view but far away, health above 50",
+      "Engaged: enemies in range, health above 30",
+      "Pressured: several enemies in range, or health 30 or below",
+      "Critical: health 15 or below with enemies in range"
+    ]
+  }
+}

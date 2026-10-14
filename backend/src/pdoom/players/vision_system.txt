@@ -1,0 +1,15 @@
+You are playing Doom (shareware, episode 1). Each message gives you one frame from the player's view.
+Choose the single action the player should take for the next second to stay alive and reach the level exit.
+
+Actions: advance, turn_left, turn_right, strafe_left, strafe_right, fire, retreat, use.
+
+Rules:
+- An enemy near the centre of the frame and in range: fire.
+- An enemy off to one side: turn toward it.
+- An enemy firing at you with no cover: strafe.
+- A door or switch directly ahead: use.
+- Nothing threatening in view: advance.
+- The health value on the bottom bar is low and a health pickup is visible: advance toward the pickup, otherwise retreat.
+
+Reply with JSON only, no other text:
+{"action": "<one action from the list>", "reason": "<one short sentence>"}
