@@ -1,0 +1,80 @@
+# Creates the Lakebase project and database for p(doom) and applies databricks/lakebase/*.sql.
+# Needs the DATABRICKS_* secrets. Results are annotations.
+name: lakebase
+on:
+  workflow_dispatch:
+    inputs:
+      project_id: { default: pdoom }
+      database: { default: pdoom }
+  push:
+    branches: [feat/lakebase]
+    paths: [.github/workflows/lakebase.yml, databricks/lakebase/**]
+
+permissions:
+  contents: read
+
+env:
+  DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+  DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
+  DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+  PROJECT: ${{ inputs.project_id || 'pdoom' }}
+  DB: ${{ inputs.database || 'pdoom' }}
+
+jobs:
+  lakebase:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: databricks/setup-cli@main
+      - name: Discover the CLI
+        run: |
+          echo "::notice title=cli::$(databricks --version)"
+          echo "::notice title=create-database help::$(databricks postgres create-database -h 2>&1 | tr '\n' '|' | cut -c1-1800)"
+      - name: Existing projects
+        run: |
+          echo "::notice title=projects::$(databricks postgres list-projects -o json 2>&1 | jq -c '[.[]?|.name]' 2>/dev/null | cut -c1-500)"
+      - name: Create the project
+        run: |
+          set +e
+          if databricks postgres get-project "projects/$PROJECT" >/dev/null 2>&1; then
+            echo "::notice title=project::projects/$PROJECT already exists"; exit 0
+          fi
+          out=$(databricks postgres create-project "$PROJECT" --json '{"spec":{"display_name":"p(doom) telemetry"}}' -o json 2>&1)
+          code=$?
+          echo "::notice title=create-project exit=${code}::$(printf '%s' "$out" | tr '\n' ' ' | cut -c1-1500)"
+          exit $code
+      - name: Branch, endpoint and databases
+        run: |
+          B=$(databricks postgres list-branches "projects/$PROJECT" -o json | jq -r '.[]|select(.name|endswith("/production"))|.name')
+          echo "$B" > "$RUNNER_TEMP/branch"
+          E=$(databricks postgres list-endpoints "$B" -o json | jq -r '.[0].name')
+          echo "$E" > "$RUNNER_TEMP/endpoint"
+          H=$(databricks postgres get-endpoint "$E" -o json | jq -r '.status.hosts.host')
+          echo "$H" > "$RUNNER_TEMP/host"
+          D=$(databricks postgres list-databases "$B" -o json | jq -c '[.[]|{name, pg: .status.postgres_database}]')
+          echo "::notice title=lakebase::branch=$B endpoint=$E host=$H databases=$D"
+      - name: Create the database
+        run: |
+          set +e
+          B=$(cat "$RUNNER_TEMP/branch")
+          if databricks postgres list-databases "$B" -o json | jq -e --arg d "$DB" '.[]|select(.status.postgres_database==$d)' >/dev/null; then
+            echo "::notice title=database::$DB already exists"; exit 0
+          fi
+          out=$(databricks postgres create-database "$B" "$DB" --json "{\"spec\":{\"postgres_database\":\"$DB\"}}" -o json 2>&1)
+          code=$?
+          echo "::notice title=create-database exit=${code}::$(printf '%s' "$out" | tr '\n' ' ' | cut -c1-1500)"
+          exit $code
+      - name: Create the telemetry tables
+        run: |
+          set +e
+          E=$(cat "$RUNNER_TEMP/endpoint"); H=$(cat "$RUNNER_TEMP/host")
+          tok=$(databricks postgres generate-database-credential "$E" -o json | jq -r .token)
+          echo "::add-mask::$tok"
+          export PGPASSWORD="$tok"
+          conn="host=$H user=$DATABRICKS_CLIENT_ID dbname=$DB sslmode=require"
+          out=$(psql "$conn" -v ON_ERROR_STOP=1 -f databricks/lakebase/01_tables.sql 2>&1)
+          code=$?
+          echo "::notice title=apply tables exit=${code}::$(printf '%s' "$out" | tr '\n' '|' | cut -c1-1500)"
+          [ $code -eq 0 ] || exit $code
+          cols=$(psql "$conn" -At -c "select table_name||'('||count(*)||')' from information_schema.columns where table_schema='pdoom' group by table_name order by 1" | paste -sd, -)
+          echo "::notice title=tables::${cols}"
