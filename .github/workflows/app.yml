@@ -111,33 +111,13 @@ jobs:
           echo "::notice title=app status::${st}"
           logs=$(databricks apps logs "$APP_NAME" --tail-lines 40 2>&1 | tail -c 3000 | tr '\n' '|')
           echo "::notice title=app logs::${logs}"
-      - name: Check the deployed app over HTTP
-        run: |
-          url=$(databricks apps get "$APP_NAME" -o json | jq -r .url)
-          tok=$(databricks auth token -o json | jq -r .access_token)
-          echo "$tok" > "$RUNNER_TEMP/tok"; echo "$url" > "$RUNNER_TEMP/url"
-          res=""
-          for p in /api/health /api/players /doom/websockets-doom.wasm /doom/doom1.wad /; do
-            line=$(curl -s -o "$RUNNER_TEMP/body" -D "$RUNNER_TEMP/hdr" -w '%{http_code} %{size_download}' -H "Authorization: Bearer $tok" "$url$p")
-            res="$res $p=$line"
-          done
-          csp=$(grep -i '^content-security-policy' "$RUNNER_TEMP/hdr" | head -1 | cut -c1-600)
-          echo "::notice title=http checks::${res}"
-          echo "::notice title=csp::${csp:-none}"
-          h=$(curl -s -H "Authorization: Bearer $tok" "$url/api/health" | head -c 400)
-          echo "::notice title=health body::${h}"
-      - uses: actions/setup-node@v4
-        with: { node-version: 20 }
-      - name: Play a session in the deployed app
-        run: |
-          mkdir -p "$RUNNER_TEMP/v" && cp scripts/verify_app.mjs "$RUNNER_TEMP/v/"
-          cd "$RUNNER_TEMP/v" && npm init -y >/dev/null && npm i --silent playwright@1.49.1
-          npx playwright install --with-deps chromium >/dev/null
-          set +e
-          out=$(timeout 290 node verify_app.mjs "$(cat $RUNNER_TEMP/url)" "$(cat $RUNNER_TEMP/tok)" 2>&1)
-          code=$?
-          echo "::notice title=browser session exit=${code}::$(printf '%s' "$out" | tail -c 3500 | tr '\n' ' ')"
-      - name: Did the session reach Databricks
-        run: |
-          q=$(databricks api post /api/2.0/sql/statements --json "$(jq -nc --arg w "$WAREHOUSE" --arg s "SELECT player_type, engine, outcome, started_at FROM $CATALOG.$SCHEMA.doom_sessions ORDER BY started_at DESC LIMIT 5" '{warehouse_id:$w,wait_timeout:"50s",statement:$s}')" | jq -c '{state:.status.state, err:.status.error.message, rows:.result.data_array}')
-          echo "::notice title=latest sessions::${q}"
+
+  verify:
+    needs: deploy
+    uses: ./.github/workflows/app-verify.yml
+    secrets: inherit
+    with:
+      catalog: ${{ inputs.catalog || 'workspace' }}
+      schema: ${{ inputs.schema || 'pdoom' }}
+      warehouse_id: ${{ inputs.warehouse_id || '4f084f656bc73157' }}
+      app_name: ${{ inputs.app_name || 'pdoom' }}
