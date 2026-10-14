@@ -38,5 +38,7 @@ sed -i 's/-gsource-map/--profiling-funcs/; s| --source-map-base /||' "$SRC/confi
 (cd "$SRC" && ./scripts/clean.sh >/dev/null 2>&1 || true; ./scripts/build.sh)
 
 cp "$SRC/src/websockets-doom.js" "$SRC/src/websockets-doom.wasm" "$OUT/"
-cp "$SRC/src/default.cfg" "$OUT/"
+# The fork's default.cfg rebinds keys (fire is "9"). Drop its key_* lines so Doom's standard
+# bindings apply: arrows move, Ctrl fires, Space uses.
+grep -v '^key_' "$SRC/src/default.cfg" > "$OUT/default.cfg"
 ls -la "$OUT"

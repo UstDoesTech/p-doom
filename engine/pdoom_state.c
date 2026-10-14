@@ -6,7 +6,7 @@
  *
  *   const char *pdoom_get_state(void)            JSON snapshot of the console player's world
  *   void pdoom_new_game(int episode, int map, int seed)
- *   void pdoom_pause(void), pdoom_resume(void)   stop and start the main loop
+ *   void pdoom_pause(void), pdoom_resume(void)   freeze and unfreeze the world
  *   void pdoom_apply_seed(void)                  called from G_InitNew after M_ClearRandom
  *
  * Conventions: positions are map units. "angle" is degrees counter-clockwise from east, 0..360.
@@ -256,14 +256,17 @@ void pdoom_new_game(int episode, int map, int seed)
     G_DeferedInitNew(sk_medium, episode, map);
 }
 
+/* Freeze and unfreeze the world with Doom's own pause flag. P_Ticker returns early while it is
+ * set, so leveltime and every thinker stop, while rendering and input keep running. Pausing the
+ * Emscripten main loop instead does not resume reliably next to the fork's asyncify sleeps. */
 EMSCRIPTEN_KEEPALIVE
 void pdoom_pause(void)
 {
-    emscripten_pause_main_loop();
+    paused = true;
 }
 
 EMSCRIPTEN_KEEPALIVE
 void pdoom_resume(void)
 {
-    emscripten_resume_main_loop();
+    paused = false;
 }
