@@ -166,8 +166,10 @@ static int exit_bearing(const mobj_t *me, double *bearing)
     return found;
 }
 
+/* mode bits: 1 = scan thinkers, 2 = find the exit, 4 = line-of-sight checks. 7 is the real thing;
+ * the smaller modes exist so a hang can be traced to one part of the scan. */
 EMSCRIPTEN_KEEPALIVE
-const char *pdoom_get_state(void)
+const char *pdoom_get_state_ex(int mode)
 {
     player_t *p = &players[consoleplayer];
     mobj_t *me = p->mo;
@@ -182,7 +184,7 @@ const char *pdoom_get_state(void)
         return out;
     }
 
-    for (th = thinkercap.next; th != &thinkercap; th = th->next) {
+    for (th = thinkercap.next; (mode & 1) && th != &thinkercap; th = th->next) {
         mobj_t *m;
         listed_t item;
         if (th->function.acp1 != (actionf_p1)P_MobjThinker) continue;
@@ -192,7 +194,7 @@ const char *pdoom_get_state(void)
         item.bearing = bearing_to(me, (double)m->x / 65536.0, (double)m->y / 65536.0);
         if ((m->flags & MF_COUNTKILL) && m->health > 0 && !(m->flags & MF_CORPSE)) {
             item.kind = (int)m->type;
-            item.los = P_CheckSight(me, m) ? 1 : 0;
+            item.los = (mode & 4) && P_CheckSight(me, m) ? 1 : 0;
             keep_nearest(enemies, &ne, &item);
         } else if (m->flags & MF_SPECIAL) {
             item.kind = (int)m->sprite;
@@ -226,11 +228,17 @@ const char *pdoom_get_state(void)
                       i ? "," : "", pickup_name((spritenum_t)pickups[i].kind), pickups[i].distance,
                       pickups[i].bearing);
 
-    if (exit_bearing(me, &eb))
+    if ((mode & 2) && exit_bearing(me, &eb))
         snprintf(out + n, OUT_SIZE - n, "],\"exit_bearing\":%.2f}", eb);
     else
         snprintf(out + n, OUT_SIZE - n, "],\"exit_bearing\":null}");
     return out;
+}
+
+EMSCRIPTEN_KEEPALIVE
+const char *pdoom_get_state(void)
+{
+    return pdoom_get_state_ex(7);
 }
 
 /* Called from G_InitNew right after M_ClearRandom, so the seed survives level start. */

@@ -45,7 +45,7 @@ const slim = (s) =>
       }
     : s;
 
-async function experiment(name, body) {
+async function experiment(name, body, query = "") {
   const out = { samples: [], errors: [] };
   report.experiments[name] = out;
   const page = await browser.newPage();
@@ -55,11 +55,12 @@ async function experiment(name, body) {
       page.evaluate(fn, arg),
       new Promise((_, rej) => setTimeout(() => rej(new Error("hung")), ms)),
     ]);
-  const state = async () => slim(await ev(() => JSON.parse(Module.ccall("pdoom_get_state", "string", [], []))));
-  const sample = async (label) => {
+  const state = async (mode = 7) =>
+    slim(await ev((m) => JSON.parse(Module.ccall("pdoom_get_state_ex", "string", ["number"], [m])), mode));
+  const sample = async (label, mode = 7) => {
     const t = Date.now();
     try {
-      out.samples.push({ label, ...(await state()) });
+      out.samples.push({ label, ...(await state(mode)) });
     } catch (e) {
       out.samples.push({ label, error: String(e).slice(0, 60), ms: Date.now() - t });
       throw e;
@@ -72,7 +73,7 @@ async function experiment(name, body) {
     ev(([f, a]) => Module.ccall(f, null, a.map(() => "number"), a), [fn, args]);
   const limit = new Promise((_, rej) => setTimeout(() => rej(new Error("experiment timed out")), 50000));
   try {
-    await page.goto(`http://localhost:${port}/`);
+    await page.goto(`http://localhost:${port}/${query}`);
     await page.waitForFunction(() => window.engineReady, null, { timeout: 40000 });
     await sleep(3000);
     await Promise.race([body({ sample, key, call, sleep }), limit]);
@@ -84,44 +85,21 @@ async function experiment(name, body) {
   }
 }
 
-await experiment("idle", async ({ sample, sleep }) => {
-  for (let i = 0; i < 5; i++) {
-    await sample("t" + i);
+// Which part of the state scan, if any, wedges the page?
+for (const mode of [0, 1, 3, 7]) {
+  await experiment(`warp_mode${mode}`, async ({ sample, sleep }) => {
+    for (let i = 0; i < 3; i++) {
+      await sample("t" + i, mode);
+      await sleep(1000);
+    }
+  });
+}
+await experiment("nowarp_mode7", async ({ sample, sleep }) => {
+  for (let i = 0; i < 3; i++) {
+    await sample("t" + i, 7);
     await sleep(1000);
   }
-});
-
-await experiment("key_held", async ({ sample, key, sleep }) => {
-  await sample("before");
-  await key("keydown");
-  for (let i = 0; i < 6; i++) {
-    await sleep(500);
-    await sample("held" + i);
-  }
-  await key("keyup");
-  await sample("released");
-});
-
-await experiment("pause", async ({ sample, call, sleep }) => {
-  await sample("before");
-  await call("pdoom_pause");
-  await sleep(400);
-  await sample("paused+400ms");
-  await sleep(1200);
-  await sample("paused+1600ms");
-  await call("pdoom_resume");
-  await sleep(1000);
-  await sample("resumed");
-});
-
-await experiment("new_game", async ({ sample, call, sleep }) => {
-  await sample("before");
-  await call("pdoom_new_game", [1, 1, 42]);
-  for (let i = 0; i < 6; i++) {
-    await sleep(1000);
-    await sample("after" + i);
-  }
-});
+}, "?nowarp=1");
 
 await browser.close();
 server.close();
