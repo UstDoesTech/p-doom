@@ -12,7 +12,7 @@ on:
         default: false
       catalog:
         description: Existing catalog that will hold the schema
-        default: main
+        default: workspace
       schema:
         default: pdoom
       warehouse_id:
@@ -53,7 +53,7 @@ jobs:
         working-directory: databricks
         run: >
           databricks bundle validate
-          --var="catalog=${{ inputs.catalog || 'main' }}"
+          --var="catalog=${{ inputs.catalog || 'workspace' }}"
           --var="schema=${{ inputs.schema || 'pdoom' }}"
           --var="app_principal=${DATABRICKS_CLIENT_ID}"
 

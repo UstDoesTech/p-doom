@@ -6,6 +6,8 @@ param databricksClientId string
 @secure()
 param databricksClientSecret string
 param warehouseId string
+param ucCatalog string = 'workspace'
+param ucSchema string = 'pdoom'
 param image string = 'mcr.microsoft.com/k8se/quickstart:latest'
 
 resource logs 'Microsoft.OperationalInsights/workspaces@2022-10-01' = {
@@ -63,6 +65,8 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
             { name: 'DATABRICKS_CLIENT_ID', value: databricksClientId }
             { name: 'DATABRICKS_CLIENT_SECRET', secretRef: 'databricks-secret' }
             { name: 'PDOOM_WAREHOUSE_ID', value: warehouseId }
+            { name: 'PDOOM_UC_CATALOG', value: ucCatalog }
+            { name: 'PDOOM_UC_SCHEMA', value: ucSchema }
             { name: 'PDOOM_SINK', value: 'sql' }
           ]
         }
