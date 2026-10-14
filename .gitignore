@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+
+# Node
+node_modules/
+web/dist/
+web/.vite/
+
+# Local config and output
+.env
+*.local
+telemetry.jsonl
+.databricks/
+
+# Engine build output (the built files you want to ship go in web/public/doom/)
+engine/build/
+engine/src/
