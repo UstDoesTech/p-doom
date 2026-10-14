@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Assembles the Databricks App directory.
 #   scripts/build_app.sh <engine-dir> <out-dir> [catalog] [schema]
-# <engine-dir> holds websockets-doom.js/.wasm, doom1.wad and default.cfg (the engine CI artifact).
+# Env: SINK (default both), LAKEBASE_ENDPOINT, LAKEBASE_DB. PG_HOST is left as __PG_HOST__ for the
+# deploy job to fill in. <engine-dir> holds websockets-doom.js/.wasm, doom1.wad and default.cfg (the engine CI artifact).
 # Needs the web app built into web/dist first (npm run build, with the engine files already in
 # web/public/doom so Vite copies them), or this script copies them in afterwards.
 set -euo pipefail
@@ -18,7 +19,8 @@ cp -r "$root/databricks/sql" "$out/sql"
 cat > "$out/requirements.txt" <<REQ
 uvicorn[standard]>=0.30
 pydantic-settings>=2.3
-databricks-sdk[openai]>=0.40
+databricks-sdk[openai]>=0.81
+psycopg[binary]>=3.2
 REQ
 
 cat > "$out/app.yaml" <<YAML
@@ -27,7 +29,13 @@ env:
   - name: PDOOM_WAREHOUSE_ID
     valueFrom: sql-warehouse
   - name: PDOOM_SINK
-    value: sql
+    value: "${SINK:-both}"
+  - name: PDOOM_LAKEBASE_ENDPOINT
+    value: "${LAKEBASE_ENDPOINT:-projects/pdoom/branches/production/endpoints/primary}"
+  - name: PDOOM_PG_HOST
+    value: "__PG_HOST__"
+  - name: PDOOM_PG_DATABASE
+    value: "${LAKEBASE_DB:-pdoom}"
   - name: PDOOM_UC_CATALOG
     value: "$catalog"
   - name: PDOOM_UC_SCHEMA

@@ -17,6 +17,12 @@ variables:
   app_name:
     description: Databricks App name (workspace-global, 30 characters at most)
     default: pdoom
+  lakebase_branch:
+    description: Lakebase branch the app writes telemetry to
+    default: projects/pdoom/branches/production
+  lakebase_database:
+    description: Lakebase database resource path
+    default: projects/pdoom/branches/production/databases/pdoom
   app_source:
     description: Directory built by scripts/build_app.sh
     default: ../app-dist
@@ -59,5 +65,10 @@ resources:
           sql_warehouse:
             id: ${var.warehouse_id}
             permission: CAN_USE
+        - name: postgres
+          postgres:
+            branch: ${var.lakebase_branch}
+            database: ${var.lakebase_database}
+            permission: CAN_CONNECT_AND_CREATE
 # The app's service principal also needs USE CATALOG on the catalog, which a bundle in this
 # schema cannot grant:   GRANT USE CATALOG ON CATALOG workspace TO `<application id>`;

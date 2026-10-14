@@ -18,7 +18,7 @@ on:
       app_name:
         default: pdoom
   push:
-    branches: [feat/databricks-app]
+    branches: [feat/databricks-app, feat/lakebase-sink]
     paths: [.github/workflows/app.yml, scripts/**, databricks/**, web/**, backend/**]
 
 permissions:
@@ -68,6 +68,12 @@ jobs:
       - uses: databricks/setup-cli@main
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
+      - name: Point the app at the Lakebase endpoint
+        run: |
+          host=$(databricks postgres get-endpoint "projects/pdoom/branches/production/endpoints/primary" -o json | jq -r '.status.hosts.host')
+          [ -n "$host" ] && [ "$host" != null ]
+          sed -i "s/__PG_HOST__/$host/" app-dist/app.yaml
+          echo "::notice title=lakebase host::$host"
       - name: Deploy bundle
         working-directory: databricks
         run: |
@@ -77,6 +83,16 @@ jobs:
             --var="warehouse_id=$WAREHOUSE" --var="app_name=$APP_NAME" 2>&1)
           code=$?
           echo "::notice title=bundle deploy exit=${code}::$(printf '%s' "$out" | tail -c 1500 | tr '\n' '|')"
+          exit $code
+      - name: Lakebase tables and the app's grants
+        run: |
+          set +e
+          for f in databricks/lakebase/*.sql; do scripts/pg.sh -q -f "$f" >/dev/null 2>"$RUNNER_TEMP/pgerr" || { echo "::error title=lakebase $f::$(tr '\n' '|' < "$RUNNER_TEMP/pgerr" | cut -c1-600)"; exit 1; }; done
+          sp=$(databricks apps get "$APP_NAME" -o json | jq -r '.service_principal_client_id')
+          echo "::add-mask::$sp"
+          out=$(scripts/pg.sh -c "GRANT USAGE ON SCHEMA pdoom TO \"$sp\"; GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA pdoom TO \"$sp\"; ALTER DEFAULT PRIVILEGES IN SCHEMA pdoom GRANT SELECT, INSERT, UPDATE ON TABLES TO \"$sp\";" 2>&1)
+          code=$?
+          echo "::notice title=lakebase grants exit=${code}::$(printf '%s' "$out" | tr '\n' '|' | cut -c1-600)"
           exit $code
       - name: Tables and views
         working-directory: backend

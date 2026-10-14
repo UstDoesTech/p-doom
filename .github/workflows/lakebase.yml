@@ -9,7 +9,7 @@ on:
       catalog: { default: workspace }
       schema: { default: pdoom }
   push:
-    branches: [feat/lakebase]
+    branches: [feat/lakebase, feat/lakebase-sink]
     paths: [.github/workflows/lakebase.yml, databricks/lakebase/**]
 
 permissions:
@@ -71,19 +71,15 @@ jobs:
           code=$?
           echo "::notice title=create-database exit=${code}::$(printf '%s' "$out" | tr '\n' ' ' | cut -c1-1500)"
           exit $code
-      - name: Create the telemetry tables
+      - name: Apply the telemetry table scripts in order
         run: |
           set +e
-          E=$(cat "$RUNNER_TEMP/endpoint"); H=$(cat "$RUNNER_TEMP/host")
-          tok=$(databricks postgres generate-database-credential "$E" -o json | jq -r .token)
-          echo "::add-mask::$tok"
-          export PGPASSWORD="$tok"
-          conn="host=$H user=$DATABRICKS_CLIENT_ID dbname=$DB sslmode=require"
-          out=$(psql "$conn" -v ON_ERROR_STOP=1 -f databricks/lakebase/01_tables.sql 2>&1)
-          code=$?
-          echo "::notice title=apply tables exit=${code}::$(printf '%s' "$out" | tr '\n' '|' | cut -c1-1500)"
-          [ $code -eq 0 ] || exit $code
-          cols=$(psql "$conn" -At -c "select table_name||'('||count(*)||')' from information_schema.columns where table_schema='pdoom' group by table_name order by 1" | paste -sd, -)
+          for f in databricks/lakebase/*.sql; do
+            out=$(scripts/pg.sh -f "$f" 2>&1); code=$?
+            echo "::notice title=apply $(basename $f) exit=${code}::$(printf '%s' "$out" | tr '\n' '|' | cut -c1-900)"
+            [ $code -eq 0 ] || exit $code
+          done
+          cols=$(scripts/pg.sh -At -c "select table_name||'('||count(*)||')' from information_schema.columns where table_schema='pdoom' group by table_name order by 1" | paste -sd, -)
           echo "::notice title=tables::${cols}"
       - name: Lakehouse sync to Unity Catalog
         run: |
