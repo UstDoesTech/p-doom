@@ -23,12 +23,20 @@ const server = createServer(async (req, res) => {
 }).listen(0);
 const port = server.address().port;
 
-const report = { checks: {}, errors: [] };
+const report = { checks: {}, errors: [], stage: "start" };
+// A wedged page must not hang CI: report what we have and stop.
+setTimeout(() => {
+  report.errors.push("watchdog: smoke test exceeded 200 s");
+  console.log(JSON.stringify(report));
+  process.exit(2);
+}, 200000).unref();
 const browser = await chromium.launch({ args: ["--use-gl=swiftshader", "--enable-unsafe-swiftshader"] });
 try {
-  const page = await browser.newPage();
+  var page = await browser.newPage();
   page.on("pageerror", (e) => report.errors.push(String(e).slice(0, 300)));
+  report.stage = "goto";
   await page.goto(`http://localhost:${port}/`);
+  report.stage = "wait runtime";
   await page.waitForFunction(() => window.engineReady, null, { timeout: 60000 });
 
   const state = () =>
@@ -42,7 +50,9 @@ try {
     throw new Error("player never appeared");
   };
 
+  report.stage = "first player";
   await waitPlayer();
+  report.stage = "new game";
   await page.evaluate(() => Module.ccall("pdoom_new_game", null, ["number", "number", "number"], [1, 1, 42]));
   await page.waitForTimeout(1500);
   const s0 = await waitPlayer();
@@ -55,6 +65,7 @@ try {
   report.checks.exit_bearing = s0.exit_bearing;
   report.checks.start = [s0.player.x, s0.player.y, s0.player.angle];
 
+  report.stage = "movement";
   // Hold forward for a second and see whether the player moves.
   const press = (type) =>
     page.evaluate((t) => document.dispatchEvent(new KeyboardEvent(t, {
@@ -66,6 +77,7 @@ try {
   report.checks.moved = Math.hypot(s1.player.x - s0.player.x, s1.player.y - s0.player.y);
   report.checks.tic_advanced = s1.tic - s0.tic;
 
+  report.stage = "pause";
   // Pause should freeze the world tic.
   await page.evaluate(() => Module.ccall("pdoom_pause", null, [], []));
   const a = (await state()).tic;
@@ -76,15 +88,18 @@ try {
   await page.waitForTimeout(800);
   report.checks.resumed = (await state()).tic > b;
 
+  report.stage = "restart";
   // Same seed twice should start in the same place.
   await page.evaluate(() => Module.ccall("pdoom_new_game", null, ["number", "number", "number"], [1, 1, 42]));
   await page.waitForTimeout(1500);
   const s2 = await waitPlayer();
   report.checks.restart_tic = s2.tic;
   report.checks.restart_same_start = s2.player.x === s0.player.x && s2.player.y === s0.player.y;
+  report.stage = "done";
   report.log_tail = (await page.evaluate(() => window.engineLog.slice(-6))).map((l) => l.slice(0, 120));
 } catch (e) {
   report.errors.push(String(e).slice(0, 400));
+  try { report.log_tail = (await page.evaluate(() => window.engineLog.slice(-8))).map((l) => l.slice(0, 160)); } catch {}
 } finally {
   await browser.close();
   server.close();
