@@ -11,7 +11,16 @@ const timer = setTimeout(() => {
   process.exit(2);
 }, 280000);
 try {
-  const ctx = await browser.newContext({ extraHTTPHeaders: { Authorization: `Bearer ${token}` } });
+  const ctx = await browser.newContext();
+  // Authorise requests to the app only; sending the token to other origins breaks their CORS.
+  const origin = new URL(url).origin;
+  await ctx.route("**/*", (route) => {
+    const req = route.request();
+    if (req.url().startsWith(origin)) {
+      return route.continue({ headers: { ...req.headers(), authorization: `Bearer ${token}` } });
+    }
+    return route.continue();
+  });
   const page = await ctx.newPage();
   page.on("console", (m) => {
     if (["error", "warning"].includes(m.type())) report.console.push(m.text().slice(0, 300));
