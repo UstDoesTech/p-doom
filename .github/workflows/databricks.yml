@@ -82,3 +82,9 @@ jobs:
         run: |
           pip install .
           python -m pdoom.setup_db --sql-dir ../databricks/sql
+      - name: Verify objects exist
+        run: |
+          out=$(databricks tables list ${{ inputs.catalog }} ${{ inputs.schema }} -o json | jq -r '.[] | "\(.name):\(.table_type)"' | paste -sd, -)
+          echo "::notice title=tables::${out}"
+          q=$(databricks api post /api/2.0/sql/statements --json '{"warehouse_id":"${{ inputs.warehouse_id }}","wait_timeout":"50s","statement":"SELECT p_doom, attempts FROM (SELECT MEASURE(p_doom) AS p_doom, MEASURE(attempts) AS attempts FROM ${{ inputs.catalog }}.${{ inputs.schema }}.doom_metrics)"}' | jq -c '{state: .status.state, err: .status.error.message, rows: .result.data_array}')
+          echo "::notice title=metric_view::${q}"
