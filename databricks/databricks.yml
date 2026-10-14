@@ -19,7 +19,13 @@ variables:
     default: pdoom
   app_source:
     description: Directory built by scripts/build_app.sh
-    default: ../build/app
+    default: ../app-dist
+
+sync:
+  paths:
+    - ../app-dist
+  include:
+    - ../app-dist/**
 
 targets:
   dev:

@@ -44,10 +44,10 @@ jobs:
         run: npm ci && npm run build
       - name: Assemble the app directory
         run: |
-          scripts/build_app.sh engine-out build/app "${{ inputs.catalog || 'workspace' }}" "${{ inputs.schema || 'pdoom' }}"
-          echo "::notice title=app dir::$(du -sh build/app | cut -f1) $(ls build/app | paste -sd, -)"
+          scripts/build_app.sh engine-out app-dist "${{ inputs.catalog || 'workspace' }}" "${{ inputs.schema || 'pdoom' }}"
+          echo "::notice title=app dir::$(du -sh app-dist | cut -f1) $(ls app-dist | paste -sd, -)"
       - uses: actions/upload-artifact@v4
-        with: { name: app-dir, path: build/app }
+        with: { name: app-dir, path: app-dist }
 
   deploy:
     needs: build
@@ -64,7 +64,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
-        with: { name: app-dir, path: build/app }
+        with: { name: app-dir, path: app-dist }
       - uses: databricks/setup-cli@main
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }

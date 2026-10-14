@@ -45,7 +45,7 @@ jobs:
       - name: Bundle validate
         working-directory: databricks
         run: |
-          mkdir -p ../build/app
+          mkdir -p ../app-dist
           databricks bundle validate \
             --var="warehouse_id=4f084f656bc73157" \
             --var="catalog=${{ inputs.catalog || 'workspace' }}" \
