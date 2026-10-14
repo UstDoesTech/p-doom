@@ -25,8 +25,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { name: shim, vanilla: '' }
-          - { name: control, vanilla: '1' }
+          - { name: shim, vanilla: '', emsdk: '3.1.74' }
+          - { name: control-3.1.74, vanilla: '1', emsdk: '3.1.74' }
+          - { name: control-3.1.10, vanilla: '1', emsdk: '3.1.10' }
+          - { name: control-3.0.0, vanilla: '1', emsdk: '3.0.0' }
+          - { name: control-2.0.34, vanilla: '1', emsdk: '2.0.34' }
     env:
       PDOOM_NO_SHIM: ${{ matrix.vanilla }}
     steps:
@@ -37,7 +40,7 @@ jobs:
           git -C "$RUNNER_TEMP/doom-wasm" checkout "$DOOM_WASM_REF"
       - run: sudo apt-get update && sudo apt-get install -y autoconf automake libtool pkg-config
       - uses: mymindstorm/setup-emsdk@v14
-        with: { version: "${{ env.EMSDK_VERSION }}" }
+        with: { version: "${{ matrix.emsdk }}" }
       - name: Build
         run: |
           set -o pipefail
