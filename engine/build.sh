@@ -25,7 +25,11 @@ sed -i '1i extern void pdoom_apply_seed(void);' "$SRC/src/doom/g_game.c"
 sed -i 's/ -s SAFE_HEAP=1//' "$SRC/configure.ac"
 [ "$(grep -c 'SAFE_HEAP' "$SRC/configure.ac")" = 0 ] || { echo "configure.ac patch failed"; exit 1; }
 
-# 4. Build.
+# 4. Keep function names in the wasm so a frozen page can be diagnosed from a stack trace.
+sed -i 's/-gsource-map/--profiling-funcs/; s| --source-map-base /||' "$SRC/configure.ac"
+[ "$(grep -c 'profiling-funcs' "$SRC/configure.ac")" -ge 1 ] || { echo "configure.ac names patch failed"; exit 1; }
+
+# 5. Build.
 (cd "$SRC" && ./scripts/clean.sh >/dev/null 2>&1 || true; ./scripts/build.sh)
 
 cp "$SRC/src/websockets-doom.js" "$SRC/src/websockets-doom.wasm" "$OUT/"

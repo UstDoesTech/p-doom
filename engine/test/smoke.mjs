@@ -33,7 +33,9 @@ setTimeout(() => {
   process.exit(2);
 }, 280000).unref();
 
-const browser = await chromium.launch({ args: ["--use-gl=swiftshader", "--enable-unsafe-swiftshader"] });
+const launch = () =>
+  chromium.launch({ args: ["--use-gl=swiftshader", "--enable-unsafe-swiftshader"] });
+let browser = await launch();
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const slim = (s) =>
@@ -50,6 +52,14 @@ async function experiment(name, body, query = "") {
   report.experiments[name] = out;
   const page = await browser.newPage();
   page.on("pageerror", (e) => out.errors.push(String(e).slice(0, 160)));
+  const consoleLines = [];
+  page.on("console", (m) => {
+    const t = m.text();
+    if (/GL Driver|ScriptProcessor/.test(t)) return;
+    consoleLines.push(t.slice(0, 110));
+    if (consoleLines.length > 14) consoleLines.shift();
+  });
+  out.console = consoleLines;
   const ev = (fn, arg, ms = 4000) =>
     Promise.race([
       page.evaluate(fn, arg),
@@ -80,28 +90,55 @@ async function experiment(name, body, query = "") {
   } catch (e) {
     out.errors.push(String(e).slice(0, 160));
   } finally {
-    out.log = await ev(() => window.engineLog.slice(-4), undefined, 1500).catch(() => "page unresponsive");
-    await page.close().catch(() => {});
+    await Promise.race([page.close(), sleep(3000)]).catch(() => {});
   }
 }
 
-// Which part of the state scan, if any, wedges the page?
-for (const mode of [0, 1, 3, 7]) {
-  await experiment(`warp_mode${mode}`, async ({ sample, sleep }) => {
-    for (let i = 0; i < 3; i++) {
-      await sample("t" + i, mode);
-      await sleep(1000);
-    }
-  });
-}
-await experiment("nowarp_mode7", async ({ sample, sleep }) => {
+// 1. Does a plain boot (title screen and demo) stay responsive?
+await experiment("nowarp", async ({ sample, sleep }) => {
   for (let i = 0; i < 3; i++) {
-    await sample("t" + i, 7);
+    await sample("t" + i, 0);
     await sleep(1000);
   }
 }, "?nowarp=1");
 
-await browser.close();
+// 2. Start a real game, and if the page freezes, pause it with the debugger and read the stack.
+await Promise.race([browser.close(), sleep(5000)]).catch(() => {});
+browser = await launch();
+{
+  const out = { errors: [], stack: [], console: [] };
+  report.experiments.warp_freeze = out;
+  const page = await browser.newPage();
+  page.on("pageerror", (e) => out.errors.push(String(e).slice(0, 160)));
+  page.on("console", (m) => {
+    const t = m.text();
+    if (/GL Driver|ScriptProcessor/.test(t)) return;
+    out.console.push(t.slice(0, 110));
+    if (out.console.length > 30) out.console.shift();
+  });
+  try {
+    await page.goto(`http://localhost:${port}/`);
+    await page.waitForFunction(() => window.engineReady, null, { timeout: 40000 });
+    await sleep(6000);
+    const cdp = await page.context().newCDPSession(page);
+    await cdp.send("Debugger.enable");
+    const paused = new Promise((res) => cdp.once("Debugger.paused", res));
+    await cdp.send("Debugger.pause");
+    const ev = await Promise.race([paused, sleep(15000).then(() => null)]);
+    if (ev) {
+      out.stack = ev.callFrames.slice(0, 14).map((f) => `${f.functionName || "?"}@${(f.url || "").split("/").pop()}:${f.location.lineNumber}`);
+      out.reason = ev.reason;
+      await cdp.send("Debugger.resume").catch(() => {});
+    } else {
+      out.stack = ["debugger could not pause the page"];
+    }
+  } catch (e) {
+    out.errors.push(String(e).slice(0, 200));
+  }
+  await Promise.race([page.close(), sleep(3000)]).catch(() => {});
+}
+
+await Promise.race([browser.close(), sleep(5000)]).catch(() => {});
 server.close();
 console.log(JSON.stringify(report));
 process.exit(0);

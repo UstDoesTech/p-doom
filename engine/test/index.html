@@ -7,7 +7,7 @@
   var Module = {
     noInitialRun: true,
     canvas: document.getElementById("canvas"),
-    print: (t) => window.engineLog.push(String(t)),
+    print: (t) => { window.engineLog.push(String(t)); console.log("doom: " + t); },
     printErr: (t) => window.engineLog.push("ERR " + t),
     preRun: () => {
       Module.FS.createPreloadedFile("", "doom1.wad", "doom1.wad", true, true);
