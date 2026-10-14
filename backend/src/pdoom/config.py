@@ -17,8 +17,16 @@ class Settings(BaseSettings):
     uc_catalog: str = "main"
     uc_schema: str = "pdoom"
 
-    sink: Literal["memory", "jsonl", "sql"] = "memory"
+    sink: Literal["memory", "jsonl", "sql", "lakebase", "both"] = "memory"
     jsonl_path: str = "telemetry.jsonl"
+
+    # Lakebase (Postgres). In a Databricks App with a postgres resource, PGHOST, PGDATABASE and
+    # PGUSER are injected; the PDOOM_ variables override them.
+    lakebase_endpoint: str = ""  # projects/<id>/branches/<id>/endpoints/<id>, for OAuth tokens
+    pg_host: str = ""
+    pg_database: str = ""
+    pg_user: str = ""
+    pg_schema: str = "pdoom"
 
     model_version: str = "dev"
     vision_endpoint: str = ""
