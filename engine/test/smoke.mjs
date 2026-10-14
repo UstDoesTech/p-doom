@@ -34,8 +34,8 @@ setTimeout(() => {
   process.exit(2);
 }, 400000).unref();
 
-const launch = () =>
-  chromium.launch({ args: ["--use-gl=swiftshader", "--enable-unsafe-swiftshader"] });
+let launchOpts = { args: ["--use-gl=swiftshader", "--enable-unsafe-swiftshader"] };
+const launch = () => chromium.launch(launchOpts);
 let browser = await launch();
 // A frozen page can make close() hang, so kill the browser process outright.
 const killBrowser = async () => {
@@ -104,41 +104,32 @@ async function experiment(name, body, query = "") {
   }
 }
 
-// A real game start freezes the page. Attach the debugger BEFORE the freeze, then interrupt the
-// busy page and read where it is stuck.
-await killBrowser();
-browser = await launch();
-{
-  const out = { errors: [], stack: [], console: [] };
-  report.experiments.warp_stack = out;
-  const page = await browser.newPage();
-  page.on("pageerror", (e) => out.errors.push(String(e).slice(0, 160)));
-  page.on("console", (m) => {
-    const t = m.text();
-    if (/GL Driver|ScriptProcessor/.test(t)) return;
-    out.console.push(t.slice(0, 70));
-    if (out.console.length > 2) out.console.shift();
-  });
+// A real game start freezes the page under the original browser flags. Try other GL set-ups.
+const setups = {
+  default_headless: { args: [] },
+  angle_swiftshader: { args: ["--use-angle=swiftshader", "--enable-unsafe-swiftshader"] },
+  angle_swiftshader_novsync: {
+    args: ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--disable-gpu-vsync"],
+  },
+  chromium_channel: { channel: "chromium", args: ["--enable-unsafe-swiftshader"] },
+  no_webgl_accel: { args: ["--disable-gpu", "--disable-accelerated-2d-canvas"] },
+};
+for (const [name, opts] of Object.entries(setups)) {
+  await killBrowser();
+  launchOpts = opts;
   try {
-    const cdp = await page.context().newCDPSession(page);
-    await cdp.send("Debugger.enable");
-    await page.goto(`http://localhost:${port}/`);
-    await page.waitForFunction(() => window.engineReady, null, { timeout: 40000 });
-    await sleep(10000);
-    const responsive = await Promise.race([page.evaluate(() => true), sleep(3000).then(() => false)]);
-    out.responsive_after_10s = responsive;
-    const paused = new Promise((res) => cdp.once("Debugger.paused", res));
-    cdp.send("Debugger.pause").catch(() => {});
-    const ev = await Promise.race([paused, sleep(20000).then(() => null)]);
-    if (ev) {
-      out.reason = ev.reason;
-      out.stack = ev.callFrames.slice(0, 16).map((f) => `${f.functionName || "?"}:${f.location.lineNumber}:${f.location.columnNumber}`);
-    } else {
-      out.stack = ["debugger could not pause the page"];
-    }
+    browser = await launch();
   } catch (e) {
-    out.errors.push(String(e).slice(0, 200));
+    report.experiments[name] = { errors: ["launch failed: " + String(e).slice(0, 120)], samples: [] };
+    continue;
   }
+  await experiment(name, async ({ sample, sleep }) => {
+    await sleep(5000);
+    for (let i = 0; i < 3; i++) {
+      await sample("t" + i, 0);
+      await sleep(1000);
+    }
+  });
 }
 
 await killBrowser();
