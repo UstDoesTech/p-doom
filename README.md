@@ -26,13 +26,21 @@ With `PDOOM_SINK=jsonl` nothing needs Databricks. For Databricks: set the `DATAB
 |---|---|
 | Backend, rule bot, telemetry sinks, API | Unit tested |
 | Web app, mock arena, reflex layer, runner | Unit tested, builds |
-| `ai_decide` player, SQL telemetry, setup script | Written, never run against a real workspace |
+| `ai_decide` player, SQL telemetry, setup script | Run against the workspace from CI: tables, views, metric view, a rule_bot session landing in `doom_sessions` |
 | Vision player | Written, never run against an endpoint |
-| Doom WASM engine | Builds in CI (Emscripten 3.1.10) and passes a headless-Chromium check: live E1M1 state, keyboard, firing, pause/resume, seed restart. Not yet in the container image |
+| Doom WASM engine | Builds in CI (Emscripten 3.1.10) and passes a headless-Chromium check: live E1M1 state, keyboard, firing, pause/resume, seed restart |
+| Databricks App | `app.yml` builds engine + web + backend, deploys with the bundle, then plays a rule_bot session on real Doom in a browser against the deployed app and checks the row in Unity Catalog. Not yet in the container image |
 | tool_agent, rl_policy, bc_policy, supervisor | Planned. The API returns 501 |
-| Bundle, Bicep, Dockerfile, workflows | Never validated or run |
+| Bundle, `app.yml`, `databricks.yml` workflows | Run |
+| Bicep, Dockerfile, `deploy.yml` (Azure) | Never validated or run |
 
 Mock arena sessions carry `engine = 'mock'`. Exclude them from every result.
+
+## Databricks App
+
+Run the `app` workflow (Actions, workflow_dispatch). It needs the three `DATABRICKS_*` secrets and a
+service principal that is a workspace admin. The app is `pdoom` in the bundle at `databricks/`; its URL is
+in the `app status` annotation. Opening it needs a workspace login with CAN_USE on the app.
 
 ## Limits
 
