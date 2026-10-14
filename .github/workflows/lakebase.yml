@@ -60,7 +60,12 @@ jobs:
           if databricks postgres list-databases "$B" -o json | jq -e --arg d "$DB" '.[]|select(.status.postgres_database==$d)' >/dev/null; then
             echo "::notice title=database::$DB already exists"; exit 0
           fi
-          out=$(databricks postgres create-database "$B" --database-id "$DB" --json "{\"spec\":{\"postgres_database\":\"$DB\"}}" -o json 2>&1)
+          roles=$(databricks postgres list-roles "$B" -o json 2>&1)
+          echo "::notice title=roles::$(printf '%s' "$roles" | jq -c '[.[]?|{name, pg: .status.postgres_role, auth: .status.auth_method}]' 2>/dev/null | cut -c1-800)"
+          # The role that will own the database: the one named after this service principal.
+          role=$(printf '%s' "$roles" | jq -r --arg c "$DATABRICKS_CLIENT_ID" '[.[]|select(.status.postgres_role==$c)][0].name // empty')
+          [ -n "$role" ] || role=$(printf '%s' "$roles" | jq -r '.[0].name')
+          out=$(databricks postgres create-database "$B" --database-id "$DB" --json "{\"spec\":{\"postgres_database\":\"$DB\",\"role\":\"$role\"}}" -o json 2>&1)
           code=$?
           echo "::notice title=create-database exit=${code}::$(printf '%s' "$out" | tr '\n' ' ' | cut -c1-1500)"
           exit $code
