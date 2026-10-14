@@ -83,11 +83,19 @@ export class WasmEngine implements Engine {
           },
         ],
         onRuntimeInitialized: () => {
-          mod.callMain([
-            "-iwad", "doom1.wad", "-window", "-nogui", "-nomusic",
-            "-config", "default.cfg", "-warp", String(episode), String(map),
-          ]);
-          resolve(mod);
+          try {
+            // This Emscripten build leaves callMain as a global, not a property of Module.
+            const callMain =
+              (window as unknown as { callMain?: (a: string[]) => void }).callMain ?? mod.callMain;
+            callMain([
+              "-iwad", "doom1.wad", "-window", "-nogui", "-nomusic",
+              "-config", "default.cfg", "-warp", String(episode), String(map),
+            ]);
+            resolve(mod);
+          } catch (e) {
+            booted = null;
+            reject(e instanceof Error ? e : new Error(String(e)));
+          }
         },
         print: (t: string) => console.log(t),
         printErr: (t: string) => console.warn(t),
@@ -100,6 +108,14 @@ export class WasmEngine implements Engine {
         reject(new Error(`Could not load ${script.src}. Build the engine first: engine/README.md`));
       };
       document.body.appendChild(script);
+      const timer = setTimeout(() => {
+        booted = null;
+        reject(new Error("Doom did not finish loading within 90 s"));
+      }, 90000);
+      mod.onRuntimeInitialized = ((inner) => () => {
+        clearTimeout(timer);
+        inner();
+      })(mod.onRuntimeInitialized);
     });
   }
 
