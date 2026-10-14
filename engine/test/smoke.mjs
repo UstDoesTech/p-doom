@@ -81,7 +81,11 @@ async function experiment(name, body, query = "") {
       key: "ArrowUp", code: "ArrowUp", keyCode: 38, which: 38, bubbles: true })), type);
   const call = (fn, args = []) =>
     ev(([f, a]) => Module.ccall(f, null, a.map(() => "number"), a), [fn, args]);
-  const limit = new Promise((_, rej) => setTimeout(() => rej(new Error("experiment timed out")), 50000));
+  let limitTimer;
+  const limit = new Promise((_, rej) => {
+    limitTimer = setTimeout(() => rej(new Error("experiment timed out")), 50000);
+  });
+  limit.catch(() => {});
   try {
     await page.goto(`http://localhost:${port}/${query}`);
     await page.waitForFunction(() => window.engineReady, null, { timeout: 40000 });
@@ -90,6 +94,7 @@ async function experiment(name, body, query = "") {
   } catch (e) {
     out.errors.push(String(e).slice(0, 160));
   } finally {
+    clearTimeout(limitTimer);
     await Promise.race([page.close(), sleep(3000)]).catch(() => {});
   }
 }
