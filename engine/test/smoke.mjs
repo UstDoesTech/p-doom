@@ -1,0 +1,93 @@
+// Boots the built engine in headless Chromium and checks the state shim. Prints one JSON line.
+//   node engine/test/smoke.mjs <dir with websockets-doom.js, doom1.wad, default.cfg>
+import { createServer } from "node:http";
+import { readFile } from "node:fs/promises";
+import { join, extname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { chromium } from "playwright";
+
+const dist = process.argv[2];
+const here = fileURLToPath(new URL(".", import.meta.url));
+const types = { ".js": "text/javascript", ".wasm": "application/wasm", ".html": "text/html" };
+
+const server = createServer(async (req, res) => {
+  const name = req.url === "/" ? "/index.html" : req.url.split("?")[0];
+  const file = name === "/index.html" ? join(here, "index.html") : join(dist, name);
+  try {
+    const body = await readFile(file);
+    res.writeHead(200, { "content-type": types[extname(file)] ?? "application/octet-stream" });
+    res.end(body);
+  } catch {
+    res.writeHead(404).end();
+  }
+}).listen(0);
+const port = server.address().port;
+
+const report = { checks: {}, errors: [] };
+const browser = await chromium.launch({ args: ["--use-gl=swiftshader", "--enable-unsafe-swiftshader"] });
+try {
+  const page = await browser.newPage();
+  page.on("pageerror", (e) => report.errors.push(String(e).slice(0, 300)));
+  await page.goto(`http://localhost:${port}/`);
+  await page.waitForFunction(() => window.engineReady, null, { timeout: 60000 });
+
+  const state = () =>
+    page.evaluate(() => JSON.parse(Module.ccall("pdoom_get_state", "string", [], [])));
+  const waitPlayer = async () => {
+    for (let i = 0; i < 120; i++) {
+      const s = await state();
+      if (s.player) return s;
+      await page.waitForTimeout(250);
+    }
+    throw new Error("player never appeared");
+  };
+
+  await waitPlayer();
+  await page.evaluate(() => Module.ccall("pdoom_new_game", null, ["number", "number", "number"], [1, 1, 42]));
+  await page.waitForTimeout(1500);
+  const s0 = await waitPlayer();
+  report.checks.level = s0.level;
+  report.checks.health = s0.player.health;
+  report.checks.status = s0.status;
+  report.checks.seed = s0.seed;
+  report.checks.enemies = s0.enemies.length;
+  report.checks.pickups = s0.pickups.length;
+  report.checks.exit_bearing = s0.exit_bearing;
+  report.checks.start = [s0.player.x, s0.player.y, s0.player.angle];
+
+  // Hold forward for a second and see whether the player moves.
+  const press = (type) =>
+    page.evaluate((t) => document.dispatchEvent(new KeyboardEvent(t, {
+      key: "ArrowUp", code: "ArrowUp", keyCode: 38, which: 38, bubbles: true })), type);
+  await press("keydown");
+  await page.waitForTimeout(1500);
+  await press("keyup");
+  const s1 = await state();
+  report.checks.moved = Math.hypot(s1.player.x - s0.player.x, s1.player.y - s0.player.y);
+  report.checks.tic_advanced = s1.tic - s0.tic;
+
+  // Pause should freeze the world tic.
+  await page.evaluate(() => Module.ccall("pdoom_pause", null, [], []));
+  const a = (await state()).tic;
+  await page.waitForTimeout(800);
+  const b = (await state()).tic;
+  report.checks.paused_frozen = a === b;
+  await page.evaluate(() => Module.ccall("pdoom_resume", null, [], []));
+  await page.waitForTimeout(800);
+  report.checks.resumed = (await state()).tic > b;
+
+  // Same seed twice should start in the same place.
+  await page.evaluate(() => Module.ccall("pdoom_new_game", null, ["number", "number", "number"], [1, 1, 42]));
+  await page.waitForTimeout(1500);
+  const s2 = await waitPlayer();
+  report.checks.restart_tic = s2.tic;
+  report.checks.restart_same_start = s2.player.x === s0.player.x && s2.player.y === s0.player.y;
+  report.log_tail = (await page.evaluate(() => window.engineLog.slice(-6))).map((l) => l.slice(0, 120));
+} catch (e) {
+  report.errors.push(String(e).slice(0, 400));
+} finally {
+  await browser.close();
+  server.close();
+}
+console.log(JSON.stringify(report));
+process.exit(report.errors.length ? 1 : 0);

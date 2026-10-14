@@ -1,25 +1,32 @@
-// Drives the Emscripten build of Chocolate Doom described in engine/README.md.
-// UNTESTED against a real build: the engine shim (engine/pdoom_state.c) has not been compiled
-// yet. The contract it must meet is spelled out below.
-//
-// The build must export, via EXPORTED_FUNCTIONS and EXPORTED_RUNTIME_METHODS:
+// Drives the Emscripten build of Chocolate Doom made by engine/build.sh.
+// The build exports, through engine/pdoom_state.c:
 //   pdoom_get_state() -> char*   JSON: GameState fields plus "status" and "kills"
 //   pdoom_new_game(int episode, int map, int seed) -> void
-//   ccall, pauseMainLoop, resumeMainLoop
+//   pdoom_pause(), pdoom_resume() -> void
+// plus the Emscripten runtime's FS and ccall. Verified in CI by engine/test/smoke.mjs.
 
 import type { EngineStatus, GameKey, GameState } from "../types";
 import type { Engine } from "./Engine";
 
 interface EmscriptenModule {
   canvas: HTMLCanvasElement;
-  arguments: string[];
   locateFile: (path: string) => string;
   onRuntimeInitialized: () => void;
   print: (text: string) => void;
   printErr: (text: string) => void;
   ccall: (name: string, ret: string | null, argTypes: string[], args: unknown[]) => unknown;
-  pauseMainLoop?: () => void;
-  resumeMainLoop?: () => void;
+  noInitialRun: boolean;
+  preRun: Array<() => void>;
+  FS: {
+    createPreloadedFile: (
+      parent: string,
+      name: string,
+      url: string,
+      canRead: boolean,
+      canWrite: boolean,
+    ) => void;
+  };
+  callMain: (args: string[]) => void;
 }
 
 type WasmState = GameState & { status: EngineStatus; kills: number };
@@ -47,7 +54,7 @@ export class WasmEngine implements Engine {
 
   constructor(
     private baseUrl = import.meta.env.VITE_DOOM_BASE ?? "/doom/",
-    private loader = import.meta.env.VITE_DOOM_LOADER ?? "pdoom.js",
+    private loader = import.meta.env.VITE_DOOM_LOADER ?? "websockets-doom.js",
   ) {}
 
   async start(canvas: HTMLCanvasElement, opts: { level: string; seed: number }): Promise<void> {
@@ -57,19 +64,34 @@ export class WasmEngine implements Engine {
 
     booted ??= this.boot(canvas, episode, map);
     this.mod = await booted;
+    this.last = undefined;
     this.mod.ccall("pdoom_new_game", null, ["number", "number", "number"], [episode, map, opts.seed]);
+    await this.waitForPlayer();
   }
 
   private boot(canvas: HTMLCanvasElement, episode: number, map: number): Promise<EmscriptenModule> {
     return new Promise((resolve, reject) => {
+      const base = this.baseUrl;
       const mod = {
         canvas,
-        arguments: ["-iwad", "doom1.wad", "-warp", String(episode), String(map)],
-        locateFile: (path: string) => this.baseUrl + path,
-        onRuntimeInitialized: () => resolve(mod),
+        noInitialRun: true,
+        locateFile: (path: string) => base + path,
+        preRun: [
+          () => {
+            mod.FS.createPreloadedFile("", "doom1.wad", base + "doom1.wad", true, true);
+            mod.FS.createPreloadedFile("", "default.cfg", base + "default.cfg", true, true);
+          },
+        ],
+        onRuntimeInitialized: () => {
+          mod.callMain([
+            "-iwad", "doom1.wad", "-window", "-nogui", "-nomusic",
+            "-config", "default.cfg", "-warp", String(episode), String(map),
+          ]);
+          resolve(mod);
+        },
         print: (t: string) => console.log(t),
         printErr: (t: string) => console.warn(t),
-      } as EmscriptenModule;
+      } as unknown as EmscriptenModule;
       (window as unknown as { Module: EmscriptenModule }).Module = mod;
       const script = document.createElement("script");
       script.src = this.baseUrl + this.loader;
@@ -81,6 +103,16 @@ export class WasmEngine implements Engine {
     });
   }
 
+  /** The level loads a moment after pdoom_new_game, so wait until the player exists. */
+  private async waitForPlayer(): Promise<void> {
+    for (let i = 0; i < 120; i++) {
+      const raw = JSON.parse(this.mod!.ccall("pdoom_get_state", "string", [], []) as string);
+      if (raw.player && raw.tic < 35) return;
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    throw new Error("Doom started but no player appeared within 30 s");
+  }
+
   private read(): WasmState {
     if (!this.mod) throw new Error("Engine not started");
     const json = this.mod.ccall("pdoom_get_state", "string", [], []) as string;
@@ -90,7 +122,7 @@ export class WasmEngine implements Engine {
 
   getState(): GameState {
     const { status: _status, kills: _kills, ...state } = this.read();
-    return state;
+    return state as GameState;
   }
   status(): EngineStatus {
     return (this.last ?? this.read()).status;
@@ -106,13 +138,13 @@ export class WasmEngine implements Engine {
   }
 
   canPause(): boolean {
-    return typeof this.mod?.pauseMainLoop === "function";
+    return this.mod !== undefined;
   }
   pause(): void {
-    this.mod?.pauseMainLoop?.();
+    this.mod?.ccall("pdoom_pause", null, [], []);
   }
   resume(): void {
-    this.mod?.resumeMainLoop?.();
+    this.mod?.ccall("pdoom_resume", null, [], []);
   }
 
   screenshot(): string | null {
