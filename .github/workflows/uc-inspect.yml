@@ -1,0 +1,20 @@
+# Read-only: which catalogs and external locations exist, for choosing a lakehouse sync target.
+name: uc-inspect
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+  DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
+  DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: databricks/setup-cli@main
+      - run: |
+          echo "::notice title=catalogs::$(databricks catalogs list -o json | jq -c '[.[]|{name, type: .catalog_type, root: .storage_root, loc: .storage_location}]' | cut -c1-1500)"
+          echo "::notice title=external locations::$(databricks external-locations list -o json 2>&1 | jq -c '[.[]?|{name, url, cred: .credential_name}]' 2>&1 | cut -c1-1200)"
+          echo "::notice title=storage credentials::$(databricks storage-credentials list -o json 2>&1 | jq -c '[.[]?|{name}]' 2>&1 | cut -c1-600)"
+          echo "::notice title=metastore::$(databricks metastores current -o json 2>&1 | jq -c '{name, storage_root, cloud, region}' 2>&1 | cut -c1-500)"
