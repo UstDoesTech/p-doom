@@ -37,10 +37,10 @@ AS $$
     - name: timeouts
       expr: COUNT(1) FILTER (WHERE outcome = 'timeout')
     - name: p_doom
-      expr: "MEASURE(deaths) / MEASURE(attempts)"
+      expr: "try_divide(MEASURE(deaths), MEASURE(attempts))"
       comment: "Probability of dying before the exit"
     - name: clear_rate
-      expr: "MEASURE(clears) / MEASURE(attempts)"
+      expr: "try_divide(MEASURE(clears), MEASURE(attempts))"
     - name: mean_duration_s
       expr: AVG(duration_s)
     - name: mean_kills
