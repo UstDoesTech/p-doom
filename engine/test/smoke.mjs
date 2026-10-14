@@ -105,26 +105,29 @@ async function experiment(name, body, query = "") {
 }
 
 // The headless-shell browser freezes on a real game start; full Chromium reports a wasm trap.
-// Use full Chromium and read the trap's stack.
+// Use full Chromium. A direct -warp start traps in P_PlayerThink, so try the menu route instead:
+// boot to the title demo, then start a game with pdoom_new_game.
 await killBrowser();
 launchOpts = { channel: "chromium", args: ["--enable-unsafe-swiftshader"] };
 browser = await launch();
-await experiment("nowarp", async ({ sample, sleep }) => {
-  await sleep(6000);
-  for (let i = 0; i < 3; i++) {
-    await sample("t" + i, 7);
+await experiment("nowarp_then_new_game", async ({ sample, call, sleep }) => {
+  await sleep(4000);
+  await sample("before", 7);
+  await call("pdoom_new_game", [1, 1, 42]);
+  for (let i = 0; i < 5; i++) {
     await sleep(1000);
+    await sample("after" + i, 7);
   }
 }, "?nowarp=1");
 await killBrowser();
 browser = await launch();
-await experiment("warp", async ({ sample, sleep }) => {
+await experiment("warp_servername", async ({ sample, sleep }) => {
   await sleep(4000);
   for (let i = 0; i < 2; i++) {
     await sample("t" + i, 0);
     await sleep(1000);
   }
-});
+}, "?extra=-servername,doomflare");
 
 await killBrowser();
 server.close();
