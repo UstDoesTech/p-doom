@@ -38,7 +38,13 @@ jobs:
           grep -iE "error|fatal|undefined|No such file" "$RUNNER_TEMP/build.log" | tail -12 | cut -c1-300 | tr '\n' '|' > "$RUNNER_TEMP/err.txt" || true
           echo "::error title=engine build failed::$(cat "$RUNNER_TEMP/err.txt")"
       - name: Fetch shareware WAD
-        run: engine/fetch_wad.sh engine-out
+        run: |
+          set +e
+          out=$(engine/fetch_wad.sh engine-out 2>&1)
+          code=$?
+          out=$(printf '%s' "$out" | tr '\n' '|' | cut -c1-1500)
+          echo "::notice title=wad exit=${code}::${out}"
+          exit $code
       - uses: actions/setup-node@v4
         with: { node-version: 20 }
       - name: Browser smoke test
