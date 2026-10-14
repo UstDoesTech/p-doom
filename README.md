@@ -28,7 +28,7 @@ With `PDOOM_SINK=jsonl` nothing needs Databricks. For Databricks: set the `DATAB
 | Web app, mock arena, reflex layer, runner | Unit tested, builds |
 | `ai_decide` player, SQL telemetry, setup script | Written, never run against a real workspace |
 | Vision player | Written, never run against an endpoint |
-| Doom WASM engine | Not built. `engine/pdoom_state.c` is an untested sketch |
+| Doom WASM engine | Builds in CI (Emscripten 3.1.10) and passes a headless-Chromium check: live E1M1 state, keyboard, firing, pause/resume, seed restart. Not yet in the container image |
 | tool_agent, rl_policy, bc_policy, supervisor | Planned. The API returns 501 |
 | Bundle, Bicep, Dockerfile, workflows | Never validated or run |
 

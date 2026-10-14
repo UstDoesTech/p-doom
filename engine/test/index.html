@@ -1,0 +1,27 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>engine smoke test</title>
+<canvas id="canvas" width="640" height="400"></canvas>
+<script>
+  window.engineLog = [];
+  var Module = {
+    noInitialRun: true,
+    canvas: document.getElementById("canvas"),
+    print: (t) => { window.engineLog.push(String(t)); console.log("doom: " + t); },
+    printErr: (t) => window.engineLog.push("ERR " + t),
+    preRun: () => {
+      Module.FS.createPreloadedFile("", "doom1.wad", "doom1.wad", true, true);
+      Module.FS.createPreloadedFile("", "default.cfg", "default.cfg", true, true);
+    },
+    onRuntimeInitialized: () => {
+      window.engineReady = true;
+      var q = new URLSearchParams(location.search);
+      var args = ["-iwad", "doom1.wad", "-window", "-nogui", "-nomusic", "-config", "default.cfg"];
+      if (!q.get("nowarp")) args.push("-warp", "1", "1");
+      var extra = q.get("extra");
+      if (extra) args = args.concat(extra.split(","));
+      callMain(args);
+    },
+  };
+</script>
+<script src="websockets-doom.js"></script>

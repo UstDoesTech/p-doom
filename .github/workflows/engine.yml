@@ -1,0 +1,74 @@
+# Builds the Doom WASM engine and runs it in headless Chromium. Doom-wasm is GPL-2.0, so the
+# built files are a GPL work: publish matching source for anything you deploy.
+name: engine
+on:
+  workflow_dispatch:
+  push:
+    branches: [feat/wasm-engine]
+    paths: [engine/**, .github/workflows/engine.yml]
+  pull_request:
+    paths: [engine/**, .github/workflows/engine.yml]
+
+permissions:
+  contents: read
+
+env:
+  DOOM_WASM_REF: 65e0d3ae2ffa604155eebd96ed40da6567bd08f4
+  # Emscripten 3.1.74 miscompiles doom-wasm: a live game traps in P_PlayerThink. 2.0.34, 3.0.0 and
+  # 3.1.10 all run it, so the engine is pinned to 3.1.10.
+
+jobs:
+  build:
+    name: build (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: shim, vanilla: '', emsdk: '3.1.10' }
+    env:
+      PDOOM_NO_SHIM: ${{ matrix.vanilla }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Get doom-wasm at the pinned commit
+        run: |
+          git clone https://github.com/cloudflare/doom-wasm "$RUNNER_TEMP/doom-wasm"
+          git -C "$RUNNER_TEMP/doom-wasm" checkout "$DOOM_WASM_REF"
+      - run: sudo apt-get update && sudo apt-get install -y autoconf automake libtool pkg-config
+      - uses: mymindstorm/setup-emsdk@v14
+        with: { version: "${{ matrix.emsdk }}" }
+      - name: Build
+        run: |
+          set -o pipefail
+          engine/build.sh "$RUNNER_TEMP/doom-wasm" "$GITHUB_WORKSPACE/engine-out" 2>&1 | tee "$RUNNER_TEMP/build.log"
+      - name: Build log tail
+        if: failure()
+        run: |
+          grep -iE "error|fatal|undefined|No such file" "$RUNNER_TEMP/build.log" | tail -12 | cut -c1-300 | tr '\n' '|' > "$RUNNER_TEMP/err.txt" || true
+          echo "::error title=engine build failed::$(cat "$RUNNER_TEMP/err.txt")"
+      - name: Fetch shareware WAD
+        run: |
+          set +e
+          out=$(engine/fetch_wad.sh engine-out 2>&1)
+          code=$?
+          out=$(printf '%s' "$out" | tr '\n' '|' | cut -c1-1500)
+          echo "::notice title=wad exit=${code}::${out}"
+          exit $code
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - name: Browser smoke test
+        working-directory: engine/test
+        run: |
+          npm init -y >/dev/null && npm i --silent playwright@1.49.1
+          npx playwright install --with-deps chromium >/dev/null
+          set +e
+          out=$(CONTROL=${{ matrix.vanilla }} timeout 450 node smoke.mjs "$GITHUB_WORKSPACE/engine-out" 2>&1)
+          code=$?
+          out=$(printf '%s' "$out" | tail -c 9000 | tr '\n' ' ')
+          echo "::notice title=engine smoke ${{ matrix.name }} exit=${code}::${out}"
+          exit $code
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pdoom-engine-${{ matrix.name }}
+          path: engine-out
