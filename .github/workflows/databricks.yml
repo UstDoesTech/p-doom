@@ -1,0 +1,78 @@
+# Databricks side of the deploy. Needs repo secrets DATABRICKS_HOST, DATABRICKS_CLIENT_ID and
+# DATABRICKS_CLIENT_SECRET (service principal, OAuth M2M).
+#   check:  read-only. Proves auth works and lists catalogs and warehouses.
+#   deploy: validates and deploys the bundle (UC schema + grants), then creates tables and views.
+name: databricks
+on:
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: Also run the deploy job
+        type: boolean
+        default: false
+      catalog:
+        description: Existing catalog that will hold the schema
+        default: main
+      schema:
+        default: pdoom
+      warehouse_id:
+        description: SQL warehouse id (required for deploy)
+        default: ""
+  push:
+    branches: [ci/databricks-deploy]
+    paths: [.github/workflows/databricks.yml]
+
+permissions:
+  contents: read
+
+env:
+  DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+  DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
+  DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: databricks/setup-cli@main
+      - run: databricks --version
+      - name: Who am I
+        run: databricks current-user me -o json | jq '{userName, active}'
+      - name: Catalogs
+        run: databricks catalogs list -o json | jq -r '.[].name'
+      - name: Warehouses
+        run: databricks warehouses list -o json | jq -r '.[] | [.id, .name, .state, .warehouse_type] | @tsv'
+      - name: Bundle validate
+        working-directory: databricks
+        run: >
+          databricks bundle validate
+          --var="catalog=${{ inputs.catalog || 'main' }}"
+          --var="schema=${{ inputs.schema || 'pdoom' }}"
+          --var="app_principal=${DATABRICKS_CLIENT_ID}"
+
+  deploy:
+    needs: check
+    if: ${{ inputs.deploy }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: databricks/setup-cli@main
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: Deploy bundle (schema and grants)
+        working-directory: databricks
+        run: |
+          databricks bundle deploy \
+            --var="catalog=${{ inputs.catalog }}" \
+            --var="schema=${{ inputs.schema }}" \
+            --var="app_principal=${DATABRICKS_CLIENT_ID}"
+      - name: Create tables, views and metric view
+        working-directory: backend
+        env:
+          PDOOM_WAREHOUSE_ID: ${{ inputs.warehouse_id }}
+          PDOOM_UC_CATALOG: ${{ inputs.catalog }}
+          PDOOM_UC_SCHEMA: ${{ inputs.schema }}
+        run: |
+          pip install .
+          python -m pdoom.setup_db --sql-dir ../databricks/sql
