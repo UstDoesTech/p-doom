@@ -104,24 +104,41 @@ async function experiment(name, body, query = "") {
   }
 }
 
-// Start the game several ways in separate browsers and see which ones stay responsive.
-const variants = {
-  nowarp: "?nowarp=1",
-  warp: "",
-  warp_nosound: "?extra=-nosound",
-  warp_nodraw: "?extra=-nodraw",
-  warp_nosound_nodraw: "?extra=-nosound,-nodraw",
-  warp_nomouse: "?extra=-nomouse",
-};
-for (const [name, query] of Object.entries(variants)) {
-  await killBrowser();
-  browser = await launch();
-  await experiment(name, async ({ sample, sleep }) => {
-    for (let i = 0; i < 3; i++) {
-      await sample("t" + i, 0);
-      await sleep(1000);
+// A real game start freezes the page. Attach the debugger BEFORE the freeze, then interrupt the
+// busy page and read where it is stuck.
+await killBrowser();
+browser = await launch();
+{
+  const out = { errors: [], stack: [], console: [] };
+  report.experiments.warp_stack = out;
+  const page = await browser.newPage();
+  page.on("pageerror", (e) => out.errors.push(String(e).slice(0, 160)));
+  page.on("console", (m) => {
+    const t = m.text();
+    if (/GL Driver|ScriptProcessor/.test(t)) return;
+    out.console.push(t.slice(0, 70));
+    if (out.console.length > 2) out.console.shift();
+  });
+  try {
+    const cdp = await page.context().newCDPSession(page);
+    await cdp.send("Debugger.enable");
+    await page.goto(`http://localhost:${port}/`);
+    await page.waitForFunction(() => window.engineReady, null, { timeout: 40000 });
+    await sleep(10000);
+    const responsive = await Promise.race([page.evaluate(() => true), sleep(3000).then(() => false)]);
+    out.responsive_after_10s = responsive;
+    const paused = new Promise((res) => cdp.once("Debugger.paused", res));
+    cdp.send("Debugger.pause").catch(() => {});
+    const ev = await Promise.race([paused, sleep(20000).then(() => null)]);
+    if (ev) {
+      out.reason = ev.reason;
+      out.stack = ev.callFrames.slice(0, 16).map((f) => `${f.functionName || "?"}:${f.location.lineNumber}:${f.location.columnNumber}`);
+    } else {
+      out.stack = ["debugger could not pause the page"];
     }
-  }, query);
+  } catch (e) {
+    out.errors.push(String(e).slice(0, 200));
+  }
 }
 
 await killBrowser();
