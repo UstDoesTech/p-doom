@@ -7,7 +7,7 @@ bundle:
 variables:
   catalog:
     description: Existing catalog that will hold the schema
-    default: main
+    default: workspace
   schema:
     default: pdoom
   app_principal:
@@ -31,4 +31,4 @@ resources:
             - SELECT
             - MODIFY
 # The service principal also needs USE CATALOG on the catalog, which a bundle in this
-# schema cannot grant:   GRANT USE CATALOG ON CATALOG main TO `<application id>`;
+# schema cannot grant:   GRANT USE CATALOG ON CATALOG workspace TO `<application id>`;

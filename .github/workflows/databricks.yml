@@ -1,0 +1,114 @@
+# Databricks side of the deploy. Needs repo secrets DATABRICKS_HOST, DATABRICKS_CLIENT_ID and
+# DATABRICKS_CLIENT_SECRET (service principal, OAuth M2M).
+#   check:  read-only. Proves auth works and lists catalogs and warehouses.
+#   deploy: validates and deploys the bundle (UC schema + grants), then creates tables and views.
+name: databricks
+on:
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: Also run the deploy job
+        type: boolean
+        default: false
+      catalog:
+        description: Existing catalog that will hold the schema
+        default: workspace
+      schema:
+        default: pdoom
+      warehouse_id:
+        description: SQL warehouse id (required for deploy)
+        default: ""
+  push:
+    branches: [ci/databricks-deploy]
+    paths: [.github/workflows/databricks.yml]
+
+permissions:
+  contents: read
+
+env:
+  DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+  DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
+  DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: databricks/setup-cli@main
+      - run: databricks --version
+      - name: Who am I
+        run: |
+          out=$(databricks current-user me -o json | jq -r '"\(.userName) active=\(.active)"')
+          echo "::notice title=identity::${out}"
+      - name: Catalogs
+        run: |
+          out=$(databricks catalogs list -o json | jq -r '.[].name' | paste -sd, -)
+          echo "::notice title=catalogs::${out}"
+      - name: Warehouses
+        run: |
+          out=$(databricks warehouses list -o json | jq -r '.[] | "\(.id) \(.name) \(.state) \(.warehouse_type)"' | paste -sd';' -)
+          echo "::notice title=warehouses::${out}"
+      - name: Bundle validate
+        working-directory: databricks
+        run: >
+          databricks bundle validate
+          --var="catalog=${{ inputs.catalog || 'workspace' }}"
+          --var="schema=${{ inputs.schema || 'pdoom' }}"
+          --var="app_principal=${DATABRICKS_CLIENT_ID}"
+
+  deploy:
+    needs: check
+    if: ${{ inputs.deploy }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: databricks/setup-cli@main
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: Deploy bundle (schema and grants)
+        working-directory: databricks
+        run: |
+          databricks bundle deploy \
+            --var="catalog=${{ inputs.catalog }}" \
+            --var="schema=${{ inputs.schema }}" \
+            --var="app_principal=${DATABRICKS_CLIENT_ID}"
+      - name: Create tables, views and metric view
+        working-directory: backend
+        env:
+          PDOOM_WAREHOUSE_ID: ${{ inputs.warehouse_id }}
+          PDOOM_UC_CATALOG: ${{ inputs.catalog }}
+          PDOOM_UC_SCHEMA: ${{ inputs.schema }}
+        run: |
+          pip install .
+          python -m pdoom.setup_db --sql-dir ../databricks/sql
+      - name: Verify objects exist
+        run: |
+          out=$(databricks tables list ${{ inputs.catalog }} ${{ inputs.schema }} -o json | jq -r '.[] | "\(.name):\(.table_type)"' | paste -sd, -)
+          echo "::notice title=tables::${out}"
+          q=$(databricks api post /api/2.0/sql/statements --json '{"warehouse_id":"${{ inputs.warehouse_id }}","wait_timeout":"50s","statement":"SELECT p_doom, attempts FROM (SELECT MEASURE(p_doom) AS p_doom, MEASURE(attempts) AS attempts FROM ${{ inputs.catalog }}.${{ inputs.schema }}.doom_metrics)"}' | jq -c '{state: .status.state, err: .status.error.message, rows: .result.data_array}')
+          echo "::notice title=metric_view::${q}"
+
+  smoke:
+    needs: deploy
+    if: ${{ inputs.deploy }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: Play one mock session per player through the real backend
+        working-directory: backend
+        env:
+          PDOOM_SINK: sql
+          PDOOM_WAREHOUSE_ID: ${{ inputs.warehouse_id }}
+          PDOOM_UC_CATALOG: ${{ inputs.catalog }}
+          PDOOM_UC_SCHEMA: ${{ inputs.schema }}
+        run: |
+          pip install -q .
+          set +e
+          out=$(python scripts/smoke_databricks.py 2>&1)
+          code=$?
+          out=$(printf '%s' "$out" | tail -c 3500 | tr '\n' ' ')
+          echo "::notice title=smoke exit=${code}::${out}"
+          exit $code
