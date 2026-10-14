@@ -30,11 +30,6 @@ fi
 sed -i 's/ -s SAFE_HEAP=1//' "$SRC/configure.ac"
 [ "$(grep -c 'SAFE_HEAP' "$SRC/configure.ac")" = 0 ] || { echo "configure.ac patch failed"; exit 1; }
 
-# 3b. Newer Emscripten defaults to a 64 KB stack (older ones used 5 MB). Doom keeps large buffers on
-# the stack, and a live game overruns 64 KB, which corrupts memory and traps in P_PlayerThink.
-sed -i 's/-s ASSERTIONS=0/-s ASSERTIONS=1 -s STACK_SIZE=5MB/' "$SRC/configure.ac"
-[ "$(grep -c 'STACK_SIZE=5MB' "$SRC/configure.ac")" -ge 1 ] || { echo "configure.ac stack patch failed"; exit 1; }
-
 # 4. Keep function names in the wasm so a frozen page can be diagnosed from a stack trace.
 sed -i 's/-gsource-map/--profiling-funcs/; s| --source-map-base /||' "$SRC/configure.ac"
 [ "$(grep -c 'profiling-funcs' "$SRC/configure.ac")" -ge 1 ] || { echo "configure.ac names patch failed"; exit 1; }
