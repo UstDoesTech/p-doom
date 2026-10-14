@@ -17,7 +17,7 @@ engine/fetch_wad.sh engine-out
 
 Copy `engine-out/*` into `web/public/doom/`. The app then offers the "Doom (WASM)" engine.
 
-`build.sh` patches two doom-wasm files: it adds the shim to `src/doom/Makefile.am`, and calls
+`build.sh` patches three doom-wasm files. It drops the debug-only SAFE_HEAP flag from `configure.ac`, adds the shim to `src/doom/Makefile.am`, and calls
 `pdoom_apply_seed()` after Doom clears its random-number index when a level starts.
 
 ## What the shim exports

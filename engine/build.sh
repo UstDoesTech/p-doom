@@ -21,7 +21,11 @@ sed -i 's|^    M_ClearRandom();|    M_ClearRandom();\n    pdoom_apply_seed();|' 
 sed -i '1i extern void pdoom_apply_seed(void);' "$SRC/src/doom/g_game.c"
 [ "$(grep -c 'pdoom_apply_seed();' "$SRC/src/doom/g_game.c")" = 1 ] || { echo "g_game.c patch failed"; exit 1; }
 
-# 3. Build.
+# 3. SAFE_HEAP is a debug check that aborts on unaligned reads, which Doom does and WebAssembly allows.
+sed -i 's/ -s SAFE_HEAP=1//' "$SRC/configure.ac"
+[ "$(grep -c 'SAFE_HEAP' "$SRC/configure.ac")" = 0 ] || { echo "configure.ac patch failed"; exit 1; }
+
+# 4. Build.
 (cd "$SRC" && ./scripts/clean.sh >/dev/null 2>&1 || true; ./scripts/build.sh)
 
 cp "$SRC/src/websockets-doom.js" "$SRC/src/websockets-doom.wasm" "$OUT/"

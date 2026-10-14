@@ -6,8 +6,6 @@ set -uo pipefail
 OUT=$(mkdir -p "$1" && cd "$1" && pwd)
 SHA1=5b2e249b9c5133ec987b3ea77596381dc0d6bc1d
 for url in ${WAD_URLS:-} \
-  https://distro.ibiblio.org/slitaz/sources/packages/d/doom1.wad \
-  https://archive.org/download/DoomsharewareEpisode/doom1.wad \
   https://raw.githubusercontent.com/Akbar30Bill/DOOM_wads/master/doom1.wad; do
   code=$(curl -sSL --retry 2 -m 120 -o "$OUT/doom1.wad" -w '%{http_code}' "$url" 2>&1 | tail -c 120)
   got=$(sha1sum "$OUT/doom1.wad" 2>/dev/null | cut -d' ' -f1)
