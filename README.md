@@ -42,6 +42,15 @@ Run the `app` workflow (Actions, workflow_dispatch). It needs the three `DATABRI
 service principal that is a workspace admin. The app is `pdoom` in the bundle at `databricks/`; its URL is
 in the `app status` annotation. Opening it needs a workspace login with CAN_USE on the app.
 
+## Telemetry path
+
+The app writes only to Lakebase (`PDOOM_SINK=lakebase`). The Lakebase database is registered in Unity
+Catalog as `pdoom_lakebase` (`databricks postgres create-catalog`), and `workspace.pdoom` holds views over it:
+`doom_sessions`, `doom_events`, `doom_decisions`, then the leaderboard and the metric view. Genie reads live
+rows with no copy. Lakehouse sync would give Delta history tables instead, but it needs a catalog on external
+storage, which this workspace does not have. `python -m pdoom.setup_db --lakebase-catalog pdoom_lakebase` builds the views
+and renames any tables from the old Unity Catalog sink to `*_uc_legacy`.
+
 ## Limits
 
 - One replica only: the session store is in memory.
