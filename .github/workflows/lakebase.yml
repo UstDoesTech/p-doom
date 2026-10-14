@@ -60,7 +60,7 @@ jobs:
           if databricks postgres list-databases "$B" -o json | jq -e --arg d "$DB" '.[]|select(.status.postgres_database==$d)' >/dev/null; then
             echo "::notice title=database::$DB already exists"; exit 0
           fi
-          out=$(databricks postgres create-database "$B" "$DB" --json "{\"spec\":{\"postgres_database\":\"$DB\"}}" -o json 2>&1)
+          out=$(databricks postgres create-database "$B" --database-id "$DB" --json "{\"spec\":{\"postgres_database\":\"$DB\"}}" -o json 2>&1)
           code=$?
           echo "::notice title=create-database exit=${code}::$(printf '%s' "$out" | tr '\n' ' ' | cut -c1-1500)"
           exit $code
