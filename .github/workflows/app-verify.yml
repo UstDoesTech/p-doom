@@ -72,7 +72,7 @@ jobs:
       - name: App logs from the session
         if: always()
         run: |
-          logs=$(databricks apps logs "$APP_NAME" --tail-lines 400 2>&1 | grep -E "ERROR|Traceback|Error|error|WARNING|lakebase|psycopg|Telemetry" | tail -25 | cut -c1-400 | tr '\n' '|')
+          logs=$(databricks apps logs "$APP_NAME" --tail-lines 400 2>&1 | grep "\[APP\]" | grep -vE "GET |POST .* 20[0-9]" | tail -30 | cut -c1-400 | tr '\n' '|')
           echo "::notice title=app log errors::${logs}"
       - name: Did the session reach Lakebase
         if: always()
