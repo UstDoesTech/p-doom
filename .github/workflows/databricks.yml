@@ -38,11 +38,17 @@ jobs:
       - uses: databricks/setup-cli@main
       - run: databricks --version
       - name: Who am I
-        run: databricks current-user me -o json | jq '{userName, active}'
+        run: |
+          out=$(databricks current-user me -o json | jq -r '"\(.userName) active=\(.active)"')
+          echo "::notice title=identity::${out}"
       - name: Catalogs
-        run: databricks catalogs list -o json | jq -r '.[].name'
+        run: |
+          out=$(databricks catalogs list -o json | jq -r '.[].name' | paste -sd, -)
+          echo "::notice title=catalogs::${out}"
       - name: Warehouses
-        run: databricks warehouses list -o json | jq -r '.[] | [.id, .name, .state, .warehouse_type] | @tsv'
+        run: |
+          out=$(databricks warehouses list -o json | jq -r '.[] | "\(.id) \(.name) \(.state) \(.warehouse_type)"' | paste -sd';' -)
+          echo "::notice title=warehouses::${out}"
       - name: Bundle validate
         working-directory: databricks
         run: >
