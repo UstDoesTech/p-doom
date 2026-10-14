@@ -49,6 +49,20 @@ try {
   report.stage = "wait runtime";
   await page.waitForFunction(() => window.engineReady, null, { timeout: 60000 });
 
+  // Heartbeat: shows when the page stops answering.
+  const beats = [];
+  report.beats = beats;
+  const t0 = Date.now();
+  const beat = setInterval(async () => {
+    const at = Math.round((Date.now() - t0) / 1000);
+    const ok = await Promise.race([
+      page.evaluate(() => 1).then(() => true),
+      new Promise((r) => setTimeout(() => r(false), 2000)),
+    ]).catch(() => false);
+    beats.push(`${at}${ok ? "+" : "-"}`);
+    if (beats.length > 60) beats.shift();
+  }, 2500);
+  beat.unref();
   const state = () =>
     ev("get_state", () => JSON.parse(Module.ccall("pdoom_get_state", "string", [], [])));
   const waitPlayer = async () => {
@@ -63,6 +77,8 @@ try {
   report.stage = "first player";
   const s0 = await waitPlayer();
   report.checks.level = s0.level;
+  report.checks.demo = s0.demo;
+  report.checks.gamestate = s0.gs;
   report.checks.health = s0.player.health;
   report.checks.status = s0.status;
   report.checks.enemies = s0.enemies.length;
@@ -72,6 +88,7 @@ try {
   report.checks.first_tic = s0.tic;
 
   report.stage = "movement";
+  report.marks = { movement_start: Math.round((Date.now() - t0) / 1000) };
   const press = (type) =>
     ev("key " + type, (t) => document.dispatchEvent(new KeyboardEvent(t, {
       key: "ArrowUp", code: "ArrowUp", keyCode: 38, which: 38, bubbles: true })), type);

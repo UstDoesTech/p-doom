@@ -207,10 +207,10 @@ const char *pdoom_get_state(void)
     else if (gamestate == GS_INTERMISSION || gameaction == ga_completed) status = "cleared";
 
     n = snprintf(out, OUT_SIZE,
-                 "{\"tic\":%d,\"level\":\"E%dM%d\",\"seed\":%d,\"status\":\"%s\",\"kills\":%d,"
+                 "{\"tic\":%d,\"level\":\"E%dM%d\",\"seed\":%d,\"demo\":%d,\"gs\":%d,\"status\":\"%s\",\"kills\":%d,"
                  "\"player\":{\"health\":%d,\"armor\":%d,\"weapon\":\"%s\","
                  "\"ammo\":{\"total\":%d},\"x\":%.1f,\"y\":%.1f,\"angle\":%.2f},\"enemies\":[",
-                 leveltime, gameepisode, gamemap, pending_seed, status, p->killcount,
+                 leveltime, gameepisode, gamemap, pending_seed, demoplayback ? 1 : 0, (int)gamestate, status, p->killcount,
                  p->health, p->armorpoints, weapon_name(p->readyweapon), ammo,
                  (double)me->x / 65536.0, (double)me->y / 65536.0, facing_deg(me));
 
