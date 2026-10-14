@@ -1,0 +1,143 @@
+# Builds Doom, the web app and the backend into one Databricks App, deploys it with the bundle in
+# databricks/, then checks the deployed app. Results are annotations. Needs repo secrets
+# DATABRICKS_HOST, DATABRICKS_CLIENT_ID and DATABRICKS_CLIENT_SECRET (service principal, workspace admin).
+name: app
+on:
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: Deploy to Databricks (otherwise build only)
+        type: boolean
+        default: true
+      catalog:
+        default: workspace
+      schema:
+        default: pdoom
+      warehouse_id:
+        default: 4f084f656bc73157
+      app_name:
+        default: pdoom
+  push:
+    branches: [feat/databricks-app]
+    paths: [.github/workflows/app.yml, scripts/**, databricks/**, web/**, backend/**]
+
+permissions:
+  contents: read
+
+jobs:
+  engine:
+    uses: ./.github/workflows/engine.yml
+
+  build:
+    needs: engine
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: pdoom-engine-shim, path: engine-out }
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: npm, cache-dependency-path: web/package-lock.json }
+      - name: Build web
+        working-directory: web
+        env:
+          VITE_DEFAULT_ENGINE: wasm
+        run: npm ci && npm run build
+      - name: Assemble the app directory
+        run: |
+          scripts/build_app.sh engine-out build/app "${{ inputs.catalog || 'workspace' }}" "${{ inputs.schema || 'pdoom' }}"
+          echo "::notice title=app dir::$(du -sh build/app | cut -f1) $(ls build/app | paste -sd, -)"
+      - uses: actions/upload-artifact@v4
+        with: { name: app-dir, path: build/app }
+
+  deploy:
+    needs: build
+    if: ${{ github.event_name == 'push' || inputs.deploy }}
+    runs-on: ubuntu-latest
+    env:
+      DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+      DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
+      DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+      CATALOG: ${{ inputs.catalog || 'workspace' }}
+      SCHEMA: ${{ inputs.schema || 'pdoom' }}
+      WAREHOUSE: ${{ inputs.warehouse_id || '4f084f656bc73157' }}
+      APP_NAME: ${{ inputs.app_name || 'pdoom' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: app-dir, path: build/app }
+      - uses: databricks/setup-cli@main
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: Deploy bundle
+        working-directory: databricks
+        run: |
+          set +e
+          out=$(databricks bundle deploy \
+            --var="catalog=$CATALOG" --var="schema=$SCHEMA" --var="app_principal=${DATABRICKS_CLIENT_ID}" \
+            --var="warehouse_id=$WAREHOUSE" --var="app_name=$APP_NAME" 2>&1)
+          code=$?
+          echo "::notice title=bundle deploy exit=${code}::$(printf '%s' "$out" | tail -c 1500 | tr '\n' '|')"
+          exit $code
+      - name: Tables and views
+        working-directory: backend
+        env:
+          PDOOM_WAREHOUSE_ID: ${{ env.WAREHOUSE }}
+          PDOOM_UC_CATALOG: ${{ env.CATALOG }}
+          PDOOM_UC_SCHEMA: ${{ env.SCHEMA }}
+        run: |
+          pip install -q .
+          python -m pdoom.setup_db --sql-dir ../databricks/sql
+      - name: Let the app's service principal into the catalog
+        run: |
+          sp=$(databricks apps get "$APP_NAME" -o json | jq -r '.service_principal_client_id')
+          echo "::add-mask::$sp"
+          stmt="GRANT USE CATALOG ON CATALOG \`$CATALOG\` TO \`$sp\`"
+          r=$(databricks api post /api/2.0/sql/statements --json "$(jq -nc --arg w "$WAREHOUSE" --arg s "$stmt" '{warehouse_id:$w,wait_timeout:"50s",statement:$s}')" | jq -c '{state:.status.state, err:.status.error.message}')
+          echo "::notice title=grant use catalog::${r}"
+      - name: Start the app
+        working-directory: databricks
+        run: |
+          set +e
+          out=$(databricks bundle run pdoom \
+            --var="catalog=$CATALOG" --var="schema=$SCHEMA" --var="app_principal=${DATABRICKS_CLIENT_ID}" \
+            --var="warehouse_id=$WAREHOUSE" --var="app_name=$APP_NAME" 2>&1)
+          code=$?
+          echo "::notice title=bundle run exit=${code}::$(printf '%s' "$out" | tail -c 1500 | tr '\n' '|')"
+          exit $code
+      - name: App status and logs
+        if: always()
+        run: |
+          st=$(databricks apps get "$APP_NAME" -o json | jq -c '{url, app: .app_status.state, msg: .app_status.message, compute: .compute_status.state, dep: .active_deployment.status.state, depmsg: .active_deployment.status.message}')
+          echo "::notice title=app status::${st}"
+          logs=$(databricks apps logs "$APP_NAME" --tail-lines 40 2>&1 | tail -c 3000 | tr '\n' '|')
+          echo "::notice title=app logs::${logs}"
+      - name: Check the deployed app over HTTP
+        run: |
+          url=$(databricks apps get "$APP_NAME" -o json | jq -r .url)
+          tok=$(databricks auth token -o json | jq -r .access_token)
+          echo "$tok" > "$RUNNER_TEMP/tok"; echo "$url" > "$RUNNER_TEMP/url"
+          res=""
+          for p in /api/health /api/players /doom/websockets-doom.wasm /doom/doom1.wad /; do
+            line=$(curl -s -o "$RUNNER_TEMP/body" -D "$RUNNER_TEMP/hdr" -w '%{http_code} %{size_download}' -H "Authorization: Bearer $tok" "$url$p")
+            res="$res $p=$line"
+          done
+          csp=$(grep -i '^content-security-policy' "$RUNNER_TEMP/hdr" | head -1 | cut -c1-600)
+          echo "::notice title=http checks::${res}"
+          echo "::notice title=csp::${csp:-none}"
+          h=$(curl -s -H "Authorization: Bearer $tok" "$url/api/health" | head -c 400)
+          echo "::notice title=health body::${h}"
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - name: Play a session in the deployed app
+        run: |
+          mkdir -p "$RUNNER_TEMP/v" && cp scripts/verify_app.mjs "$RUNNER_TEMP/v/"
+          cd "$RUNNER_TEMP/v" && npm init -y >/dev/null && npm i --silent playwright@1.49.1
+          npx playwright install --with-deps chromium >/dev/null
+          set +e
+          out=$(timeout 290 node verify_app.mjs "$(cat $RUNNER_TEMP/url)" "$(cat $RUNNER_TEMP/tok)" 2>&1)
+          code=$?
+          echo "::notice title=browser session exit=${code}::$(printf '%s' "$out" | tail -c 3500 | tr '\n' ' ')"
+      - name: Did the session reach Databricks
+        run: |
+          q=$(databricks api post /api/2.0/sql/statements --json "$(jq -nc --arg w "$WAREHOUSE" --arg s "SELECT player_type, engine, outcome, started_at FROM $CATALOG.$SCHEMA.doom_sessions ORDER BY started_at DESC LIMIT 5" '{warehouse_id:$w,wait_timeout:"50s",statement:$s}')" | jq -c '{state:.status.state, err:.status.error.message, rows:.result.data_array}')
+          echo "::notice title=latest sessions::${q}"

@@ -3,6 +3,7 @@
 name: engine
 on:
   workflow_dispatch:
+  workflow_call:
   push:
     branches: [feat/wasm-engine]
     paths: [engine/**, .github/workflows/engine.yml]
