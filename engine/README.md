@@ -25,6 +25,23 @@ Copy `engine-out/*` into `web/public/doom/`. The app then offers the "Doom (WASM
 `pdoom_get_state`, `pdoom_new_game(episode, map, seed)`, `pdoom_pause`, `pdoom_resume`. The JSON is
 described in `docs/state.md`.
 
+## Verified in CI
+
+`test/smoke.mjs` runs in full Chromium and checks: E1M1 loads at the right start, state fields, exit
+bearing, arrow keys move the player, Ctrl fires, pause freezes the world and resume restarts it,
+restarting with the same seed gives the same start, and turning right shrinks a positive bearing.
+
+## Gotchas found while building
+
+- Emscripten 3.1.74 miscompiles doom-wasm: a live game traps in `P_PlayerThink` (the title demo
+  still runs). 2.0.34, 3.0.0 and 3.1.10 are fine. The build is pinned to 3.1.10.
+- The fork's `default.cfg` binds fire to `9`. `build.sh` strips its `key_*` lines so Doom's
+  standard bindings apply.
+- `emscripten_pause_main_loop` does not resume reliably, so pause uses Doom's own `paused` flag.
+- headless-shell Chromium freezes on the trap instead of reporting it. Test with full Chromium.
+- In software-rendered CI the game runs at about 20 tics a second, not 35.
+- `PDOOM_NO_SHIM=1 engine/build.sh ...` builds doom-wasm without the shim, for control tests.
+
 ## Limits
 
 - Seeds only choose a starting point in Doom's 256-entry random table (the low byte sets the combat

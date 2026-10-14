@@ -2,8 +2,8 @@
 
 The engine returns a `GameState` (see `web/src/types.ts`, mirrored in `backend/src/pdoom/models.py`).
 
-- `tic`: game tics, 35 per second. Durations and timeouts use game time.
-- `player`: health, armor, weapon, ammo (by type), x, y, angle.
+- `tic`: world tics (Doom's `leveltime`), 35 per second when the browser keeps up. It freezes while paused. Durations and timeouts use game time.
+- `player`: health, armor, weapon, ammo, x, y, angle. The Doom engine reports ammo as `{"total": n}`; the mock arena reports it by type.
 - `enemies`, `pickups`: things in view, with positions.
 - `exit_bearing`: bearing to the level exit.
 

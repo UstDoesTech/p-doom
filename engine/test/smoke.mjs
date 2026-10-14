@@ -82,6 +82,22 @@ try {
   report.checks.tics_per_second_idle = Math.round((sIdle.tic - s0.tic) / 2);
   check("tics_advance", sIdle.tic > s0.tic);
 
+  // Bearing sign: the exit is to the right (positive), so turning right must shrink the bearing
+  // and lower the facing angle (Doom angles run counter-clockwise).
+  const RIGHT = { key: "ArrowRight", code: "ArrowRight", keyCode: 39 };
+  const t0 = await state();
+  await press("document", "keydown", RIGHT);
+  await sleep(500);
+  await press("document", "keyup", RIGHT);
+  const t1 = await state();
+  const turned = ((t0.player.angle - t1.player.angle + 540) % 360) - 180;
+  check("turn_right_lowers_angle", turned > 5, Math.round(turned));
+  check(
+    "turn_right_shrinks_positive_bearing",
+    t0.exit_bearing > 0 ? Math.abs(t1.exit_bearing) < Math.abs(t0.exit_bearing) : true,
+    [t0.exit_bearing, t1.exit_bearing],
+  );
+
   // 2. Keyboard: which dispatch target does SDL listen on?
   const moved = {};
   for (const target of ["document", "window", "canvas"]) {
