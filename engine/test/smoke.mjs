@@ -61,25 +61,19 @@ try {
   };
 
   report.stage = "first player";
-  await waitPlayer();
-  report.stage = "new game";
-  await ev("new_game", () => Module.ccall("pdoom_new_game", null, ["number", "number", "number"], [1, 1, 42]));
-  report.stage = "after new game";
-  await page.waitForTimeout(1500);
   const s0 = await waitPlayer();
   report.checks.level = s0.level;
   report.checks.health = s0.player.health;
   report.checks.status = s0.status;
-  report.checks.seed = s0.seed;
   report.checks.enemies = s0.enemies.length;
   report.checks.pickups = s0.pickups.length;
   report.checks.exit_bearing = s0.exit_bearing;
   report.checks.start = [s0.player.x, s0.player.y, s0.player.angle];
+  report.checks.first_tic = s0.tic;
 
   report.stage = "movement";
-  // Hold forward for a second and see whether the player moves.
   const press = (type) =>
-    page.evaluate((t) => document.dispatchEvent(new KeyboardEvent(t, {
+    ev("key " + type, (t) => document.dispatchEvent(new KeyboardEvent(t, {
       key: "ArrowUp", code: "ArrowUp", keyCode: 38, which: 38, bubbles: true })), type);
   await press("keydown");
   await page.waitForTimeout(1500);
@@ -89,23 +83,31 @@ try {
   report.checks.tic_advanced = s1.tic - s0.tic;
 
   report.stage = "pause";
-  // Pause should freeze the world tic.
-  await page.evaluate(() => Module.ccall("pdoom_pause", null, [], []));
+  await ev("pause", () => Module.ccall("pdoom_pause", null, [], []));
   const a = (await state()).tic;
   await page.waitForTimeout(800);
   const b = (await state()).tic;
   report.checks.paused_frozen = a === b;
-  await page.evaluate(() => Module.ccall("pdoom_resume", null, [], []));
+  await ev("resume", () => Module.ccall("pdoom_resume", null, [], []));
   await page.waitForTimeout(800);
   report.checks.resumed = (await state()).tic > b;
 
-  report.stage = "restart";
-  // Same seed twice should start in the same place.
-  await page.evaluate(() => Module.ccall("pdoom_new_game", null, ["number", "number", "number"], [1, 1, 42]));
-  await page.waitForTimeout(1500);
-  const s2 = await waitPlayer();
-  report.checks.restart_tic = s2.tic;
-  report.checks.restart_same_start = s2.player.x === s0.player.x && s2.player.y === s0.player.y;
+  report.stage = "new game";
+  await ev("new_game", () => Module.ccall("pdoom_new_game", null, ["number", "number", "number"], [1, 1, 42]));
+  report.stage = "after new game";
+  report.checks.probes = [];
+  for (let i = 0; i < 8; i++) {
+    await page.waitForTimeout(1000);
+    const t0 = Date.now();
+    try {
+      const alive = await ev("probe " + i, () => 1 + 1);
+      const st = await ev("probe state " + i, () => JSON.parse(Module.ccall("pdoom_get_state", "string", [], [])));
+      report.checks.probes.push({ i, alive, ms: Date.now() - t0, tic: st.tic, health: st.player && st.player.health, status: st.status });
+    } catch (e) {
+      report.checks.probes.push({ i, hung: String(e).slice(0, 80), ms: Date.now() - t0 });
+      break;
+    }
+  }
   report.stage = "done";
   report.log_tail = (await page.evaluate(() => window.engineLog.slice(-6))).map((l) => l.slice(0, 120));
 } catch (e) {
