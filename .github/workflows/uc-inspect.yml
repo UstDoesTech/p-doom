@@ -2,6 +2,9 @@
 name: uc-inspect
 on:
   workflow_dispatch:
+  push:
+    branches: [feat/rulebot-lakebase-only]
+    paths: [.github/workflows/uc-inspect.yml]
 permissions:
   contents: read
 env:
