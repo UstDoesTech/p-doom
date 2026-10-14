@@ -18,6 +18,8 @@
       var q = new URLSearchParams(location.search);
       var args = ["-iwad", "doom1.wad", "-window", "-nogui", "-nomusic", "-config", "default.cfg"];
       if (!q.get("nowarp")) args.push("-warp", "1", "1");
+      var extra = q.get("extra");
+      if (extra) args = args.concat(extra.split(","));
       callMain(args);
     },
   };

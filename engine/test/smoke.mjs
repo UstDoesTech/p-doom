@@ -14,7 +14,8 @@ const here = fileURLToPath(new URL(".", import.meta.url));
 const types = { ".js": "text/javascript", ".wasm": "application/wasm", ".html": "text/html" };
 
 const server = createServer(async (req, res) => {
-  const name = req.url === "/" ? "/index.html" : req.url.split("?")[0];
+  const path = req.url.split("?")[0];
+  const name = path === "/" ? "/index.html" : path;
   const file = name === "/index.html" ? join(here, "index.html") : join(dist, name);
   try {
     const body = await readFile(file);
@@ -28,14 +29,18 @@ const port = server.address().port;
 
 const report = { experiments: {} };
 setTimeout(() => {
-  report.watchdog = "smoke test exceeded 280 s";
+  report.watchdog = "smoke test exceeded 400 s";
   console.log(JSON.stringify(report));
   process.exit(2);
-}, 280000).unref();
+}, 400000).unref();
 
 const launch = () =>
   chromium.launch({ args: ["--use-gl=swiftshader", "--enable-unsafe-swiftshader"] });
 let browser = await launch();
+// A frozen page can make close() hang, so kill the browser process outright.
+const killBrowser = async () => {
+  try { browser.process()?.kill("SIGKILL"); } catch {}
+};
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const slim = (s) =>
@@ -99,51 +104,27 @@ async function experiment(name, body, query = "") {
   }
 }
 
-// 1. Does a plain boot (title screen and demo) stay responsive?
-await experiment("nowarp", async ({ sample, sleep }) => {
-  for (let i = 0; i < 3; i++) {
-    await sample("t" + i, 0);
-    await sleep(1000);
-  }
-}, "?nowarp=1");
-
-// 2. Start a real game, and if the page freezes, pause it with the debugger and read the stack.
-await Promise.race([browser.close(), sleep(5000)]).catch(() => {});
-browser = await launch();
-{
-  const out = { errors: [], stack: [], console: [] };
-  report.experiments.warp_freeze = out;
-  const page = await browser.newPage();
-  page.on("pageerror", (e) => out.errors.push(String(e).slice(0, 160)));
-  page.on("console", (m) => {
-    const t = m.text();
-    if (/GL Driver|ScriptProcessor/.test(t)) return;
-    out.console.push(t.slice(0, 110));
-    if (out.console.length > 30) out.console.shift();
-  });
-  try {
-    await page.goto(`http://localhost:${port}/`);
-    await page.waitForFunction(() => window.engineReady, null, { timeout: 40000 });
-    await sleep(6000);
-    const cdp = await page.context().newCDPSession(page);
-    await cdp.send("Debugger.enable");
-    const paused = new Promise((res) => cdp.once("Debugger.paused", res));
-    await cdp.send("Debugger.pause");
-    const ev = await Promise.race([paused, sleep(15000).then(() => null)]);
-    if (ev) {
-      out.stack = ev.callFrames.slice(0, 14).map((f) => `${f.functionName || "?"}@${(f.url || "").split("/").pop()}:${f.location.lineNumber}`);
-      out.reason = ev.reason;
-      await cdp.send("Debugger.resume").catch(() => {});
-    } else {
-      out.stack = ["debugger could not pause the page"];
+// Start the game several ways in separate browsers and see which ones stay responsive.
+const variants = {
+  nowarp: "?nowarp=1",
+  warp: "",
+  warp_nosound: "?extra=-nosound",
+  warp_nodraw: "?extra=-nodraw",
+  warp_nosound_nodraw: "?extra=-nosound,-nodraw",
+  warp_nomouse: "?extra=-nomouse",
+};
+for (const [name, query] of Object.entries(variants)) {
+  await killBrowser();
+  browser = await launch();
+  await experiment(name, async ({ sample, sleep }) => {
+    for (let i = 0; i < 3; i++) {
+      await sample("t" + i, 0);
+      await sleep(1000);
     }
-  } catch (e) {
-    out.errors.push(String(e).slice(0, 200));
-  }
-  await Promise.race([page.close(), sleep(3000)]).catch(() => {});
+  }, query);
 }
 
-await Promise.race([browser.close(), sleep(5000)]).catch(() => {});
+await killBrowser();
 server.close();
 console.log(JSON.stringify(report));
 process.exit(0);
