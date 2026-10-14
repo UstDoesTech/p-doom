@@ -61,8 +61,8 @@ async function experiment(name, body, query = "") {
   page.on("console", (m) => {
     const t = m.text();
     if (/GL Driver|ScriptProcessor/.test(t)) return;
-    consoleLines.push(t.slice(0, 110));
-    if (consoleLines.length > 14) consoleLines.shift();
+    consoleLines.push(t.slice(0, 70));
+    if (consoleLines.length > 2) consoleLines.shift();
   });
   out.console = consoleLines;
   const ev = (fn, arg, ms = 4000) =>
