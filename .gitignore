@@ -18,6 +18,7 @@ web/.vite/
 *.local
 telemetry.jsonl
 .databricks/
+app-dist/
 
 # Engine build output (the built files you want to ship go in web/public/doom/)
 engine/build/

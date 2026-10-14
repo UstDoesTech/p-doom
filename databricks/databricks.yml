@@ -1,6 +1,5 @@
 # Owns the Unity Catalog schema and its grants. Tables and views are created by
 # `python -m pdoom.setup_db` because metric views cannot take bundle variables.
-# Not validated: the Databricks CLI was not available when this was written.
 bundle:
   name: p-doom
 
@@ -11,7 +10,22 @@ variables:
   schema:
     default: pdoom
   app_principal:
-    description: Application ID of the service principal the container logs in as
+    description: Application ID of the service principal that creates the tables (the CI identity)
+  warehouse_id:
+    description: SQL warehouse the app queries
+    default: ""
+  app_name:
+    description: Databricks App name (workspace-global, 30 characters at most)
+    default: pdoom
+  app_source:
+    description: Directory built by scripts/build_app.sh
+    default: ../app-dist
+
+sync:
+  paths:
+    - ../app-dist
+  include:
+    - ../app-dist/**
 
 targets:
   dev:
@@ -30,5 +44,20 @@ resources:
             - CREATE_TABLE
             - SELECT
             - MODIFY
-# The service principal also needs USE CATALOG on the catalog, which a bundle in this
+        - principal: ${resources.apps.pdoom_app.service_principal_client_id}
+          privileges:
+            - USE_SCHEMA
+            - SELECT
+            - MODIFY
+  apps:
+    pdoom_app:
+      name: ${var.app_name}
+      description: Play Doom as many kinds of player and record p(doom) in Databricks
+      source_code_path: ${var.app_source}
+      resources:
+        - name: sql-warehouse
+          sql_warehouse:
+            id: ${var.warehouse_id}
+            permission: CAN_USE
+# The app's service principal also needs USE CATALOG on the catalog, which a bundle in this
 # schema cannot grant:   GRANT USE CATALOG ON CATALOG workspace TO `<application id>`;

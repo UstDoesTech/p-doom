@@ -1,0 +1,123 @@
+# Builds Doom, the web app and the backend into one Databricks App, deploys it with the bundle in
+# databricks/, then checks the deployed app. Results are annotations. Needs repo secrets
+# DATABRICKS_HOST, DATABRICKS_CLIENT_ID and DATABRICKS_CLIENT_SECRET (service principal, workspace admin).
+name: app
+on:
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: Deploy to Databricks (otherwise build only)
+        type: boolean
+        default: true
+      catalog:
+        default: workspace
+      schema:
+        default: pdoom
+      warehouse_id:
+        default: 4f084f656bc73157
+      app_name:
+        default: pdoom
+  push:
+    branches: [feat/databricks-app]
+    paths: [.github/workflows/app.yml, scripts/**, databricks/**, web/**, backend/**]
+
+permissions:
+  contents: read
+
+jobs:
+  engine:
+    uses: ./.github/workflows/engine.yml
+
+  build:
+    needs: engine
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: pdoom-engine-shim, path: engine-out }
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: npm, cache-dependency-path: web/package-lock.json }
+      - name: Build web
+        working-directory: web
+        env:
+          VITE_DEFAULT_ENGINE: wasm
+        run: npm ci && npm run build
+      - name: Assemble the app directory
+        run: |
+          scripts/build_app.sh engine-out app-dist "${{ inputs.catalog || 'workspace' }}" "${{ inputs.schema || 'pdoom' }}"
+          echo "::notice title=app dir::$(du -sh app-dist | cut -f1) $(ls app-dist | paste -sd, -)"
+      - uses: actions/upload-artifact@v4
+        with: { name: app-dir, path: app-dist }
+
+  deploy:
+    needs: build
+    if: ${{ github.event_name == 'push' || inputs.deploy }}
+    runs-on: ubuntu-latest
+    env:
+      DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+      DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
+      DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+      CATALOG: ${{ inputs.catalog || 'workspace' }}
+      SCHEMA: ${{ inputs.schema || 'pdoom' }}
+      WAREHOUSE: ${{ inputs.warehouse_id || '4f084f656bc73157' }}
+      APP_NAME: ${{ inputs.app_name || 'pdoom' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: app-dir, path: app-dist }
+      - uses: databricks/setup-cli@main
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: Deploy bundle
+        working-directory: databricks
+        run: |
+          set +e
+          out=$(databricks bundle deploy \
+            --var="catalog=$CATALOG" --var="schema=$SCHEMA" --var="app_principal=${DATABRICKS_CLIENT_ID}" \
+            --var="warehouse_id=$WAREHOUSE" --var="app_name=$APP_NAME" 2>&1)
+          code=$?
+          echo "::notice title=bundle deploy exit=${code}::$(printf '%s' "$out" | tail -c 1500 | tr '\n' '|')"
+          exit $code
+      - name: Tables and views
+        working-directory: backend
+        env:
+          PDOOM_WAREHOUSE_ID: ${{ env.WAREHOUSE }}
+          PDOOM_UC_CATALOG: ${{ env.CATALOG }}
+          PDOOM_UC_SCHEMA: ${{ env.SCHEMA }}
+        run: |
+          pip install -q .
+          python -m pdoom.setup_db --sql-dir ../databricks/sql
+      - name: Let the app's service principal into the catalog
+        run: |
+          sp=$(databricks apps get "$APP_NAME" -o json | jq -r '.service_principal_client_id')
+          echo "::add-mask::$sp"
+          stmt="GRANT USE CATALOG ON CATALOG \`$CATALOG\` TO \`$sp\`"
+          r=$(databricks api post /api/2.0/sql/statements --json "$(jq -nc --arg w "$WAREHOUSE" --arg s "$stmt" '{warehouse_id:$w,wait_timeout:"50s",statement:$s}')" | jq -c '{state:.status.state, err:.status.error.message}')
+          echo "::notice title=grant use catalog::${r}"
+      - name: Start the app
+        working-directory: databricks
+        run: |
+          set +e
+          out=$(databricks bundle run pdoom_app \
+            --var="catalog=$CATALOG" --var="schema=$SCHEMA" --var="app_principal=${DATABRICKS_CLIENT_ID}" \
+            --var="warehouse_id=$WAREHOUSE" --var="app_name=$APP_NAME" 2>&1)
+          code=$?
+          echo "::notice title=bundle run exit=${code}::$(printf '%s' "$out" | tail -c 1500 | tr '\n' '|')"
+          exit $code
+      - name: App status and logs
+        if: always()
+        run: |
+          st=$(databricks apps get "$APP_NAME" -o json | jq -c '{url, app: .app_status.state, msg: .app_status.message, compute: .compute_status.state, dep: .active_deployment.status.state, depmsg: .active_deployment.status.message}')
+          echo "::notice title=app status::${st}"
+          logs=$(databricks apps logs "$APP_NAME" --tail-lines 40 2>&1 | tail -c 3000 | tr '\n' '|')
+          echo "::notice title=app logs::${logs}"
+
+  verify:
+    needs: deploy
+    uses: ./.github/workflows/app-verify.yml
+    secrets: inherit
+    with:
+      catalog: ${{ inputs.catalog || 'workspace' }}
+      schema: ${{ inputs.schema || 'pdoom' }}
+      warehouse_id: ${{ inputs.warehouse_id || '4f084f656bc73157' }}
+      app_name: ${{ inputs.app_name || 'pdoom' }}

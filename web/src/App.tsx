@@ -23,7 +23,8 @@ interface Hud {
 }
 
 export default function App() {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const mockCanvasRef = useRef<HTMLCanvasElement>(null);
+  const wasmCanvasRef = useRef<HTMLCanvasElement>(null);
   const runnerRef = useRef<SessionRunner | null>(null);
   const engines = useRef<Partial<Record<EngineKind, Engine>>>({});
   const lastHud = useRef(0);
@@ -31,7 +32,11 @@ export default function App() {
   const [players, setPlayers] = useState<PlayerAvailability[]>([]);
   const [playerType, setPlayerType] = useState<PlayerType>("rule_bot");
   const [mode, setMode] = useState<Mode>("paused");
-  const [engineKind, setEngineKind] = useState<EngineKind>("mock");
+  const [engineKind, setEngineKind] = useState<EngineKind>(
+    import.meta.env.VITE_DEFAULT_ENGINE === "wasm" ? "wasm" : "mock",
+  );
+  // null while probing, then whether the built engine files are being served.
+  const [wasmAvailable, setWasmAvailable] = useState<boolean | null>(null);
   const [level, setLevel] = useState("E1M1");
   const [seed, setSeed] = useState(1);
   const [intervalMs, setIntervalMs] = useState(1000);
@@ -49,6 +54,18 @@ export default function App() {
       .then(setPlayers)
       .catch((e) => setError(`Backend not reachable: ${e.message}`));
   }, []);
+
+  useEffect(() => {
+    const base = import.meta.env.VITE_DOOM_BASE ?? "/doom/";
+    const loader = import.meta.env.VITE_DOOM_LOADER ?? "websockets-doom.js";
+    fetch(base + loader, { method: "HEAD" })
+      .then((r) => setWasmAvailable(r.ok))
+      .catch(() => setWasmAvailable(false));
+  }, []);
+
+  useEffect(() => {
+    if (wasmAvailable === false && engineKind === "wasm") setEngineKind("mock");
+  }, [wasmAvailable, engineKind]);
 
   const availability = (pt: PlayerType) => players.find((p) => p.player_type === pt);
 
@@ -91,7 +108,8 @@ export default function App() {
     );
     runnerRef.current = runner;
     try {
-      const r = await runner.run(canvasRef.current!);
+      const canvas = (engineKind === "wasm" ? wasmCanvasRef : mockCanvasRef).current!;
+      const r = await runner.run(canvas);
       setResult(
         r.outcome === "aborted"
           ? "Stopped. This attempt was discarded and will not count."
@@ -148,7 +166,9 @@ export default function App() {
             onChange={(e) => setEngineKind(e.target.value as EngineKind)}
           >
             <option value="mock">mock arena (pipeline test)</option>
-            <option value="wasm">Doom (WASM)</option>
+            <option value="wasm" disabled={wasmAvailable === false}>
+              Doom (WASM){wasmAvailable === false ? " - engine files not deployed" : ""}
+            </option>
           </select>
         </label>
         <label>
@@ -200,7 +220,24 @@ export default function App() {
       {result && <p className="result">{result}</p>}
 
       <section className="stage">
-        <canvas ref={canvasRef} width={640} height={400} tabIndex={0} />
+        <div className="screens">
+          <canvas
+            ref={mockCanvasRef}
+            width={640}
+            height={400}
+            tabIndex={0}
+            hidden={engineKind !== "mock"}
+          />
+          <canvas
+            ref={wasmCanvasRef}
+            id="canvas"
+            width={640}
+            height={400}
+            tabIndex={0}
+            hidden={engineKind !== "wasm"}
+            onContextMenu={(e) => e.preventDefault()}
+          />
+        </div>
         <aside className="panel">
           <h2>Now</h2>
           {hud ? (
