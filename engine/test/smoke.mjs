@@ -84,6 +84,7 @@ try {
 
   report.stage = "pause";
   await ev("pause", () => Module.ccall("pdoom_pause", null, [], []));
+  await page.waitForTimeout(400); // let a frame that was already running finish
   const a = (await state()).tic;
   await page.waitForTimeout(800);
   const b = (await state()).tic;
