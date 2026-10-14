@@ -19,7 +19,7 @@ from .databricks_sql import SqlRunner
 from .models import DecisionRow, EventRow, SessionRow
 
 # table -> [(column, from_json type, optional SELECT expression)]. Order matches the DDL in
-# databricks/sql/01_tables.sql, and a test keeps the two in step.
+# databricks/sql/01_tables.uc.sql, and a test keeps the two in step.
 COLUMNS: dict[str, list[tuple[str, str, str | None]]] = {
     "doom_sessions": [
         ("session_id", "string", None),
