@@ -18,8 +18,17 @@ env:
 
 jobs:
   build:
+    name: build (${{ matrix.name }})
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: shim, vanilla: '' }
+          - { name: control, vanilla: '1' }
+    env:
+      PDOOM_NO_SHIM: ${{ matrix.vanilla }}
     steps:
       - uses: actions/checkout@v4
       - name: Get doom-wasm at the pinned commit
@@ -54,12 +63,12 @@ jobs:
           npm init -y >/dev/null && npm i --silent playwright@1.49.1
           npx playwright install --with-deps chromium >/dev/null
           set +e
-          out=$(timeout 450 node smoke.mjs "$GITHUB_WORKSPACE/engine-out" 2>&1)
+          out=$(CONTROL=${{ matrix.vanilla }} timeout 450 node smoke.mjs "$GITHUB_WORKSPACE/engine-out" 2>&1)
           code=$?
           out=$(printf '%s' "$out" | tail -c 9000 | tr '\n' ' ')
-          echo "::notice title=engine smoke exit=${code}::${out}"
+          echo "::notice title=engine smoke ${{ matrix.name }} exit=${code}::${out}"
           exit $code
       - uses: actions/upload-artifact@v4
         with:
-          name: pdoom-engine
+          name: pdoom-engine-${{ matrix.name }}
           path: engine-out

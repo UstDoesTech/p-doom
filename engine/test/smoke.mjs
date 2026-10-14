@@ -28,6 +28,18 @@ const server = createServer(async (req, res) => {
 const port = server.address().port;
 
 const report = { experiments: {} };
+if (process.env.CONTROL) {
+  // Control build (no shim): only report whether a real game start traps.
+  const b = await chromium.launch({ channel: "chromium", args: ["--enable-unsafe-swiftshader"] });
+  const page = await b.newPage();
+  const out = { errors: [], console: [] };
+  page.on("pageerror", (e) => out.errors.push(String(e.stack || e).replace(/\s+/g, " ").slice(0, 500)));
+  page.on("console", (m) => { if (!/GL Driver|ScriptProcessor/.test(m.text())) out.console.push(m.text().slice(0, 70)); if (out.console.length > 2) out.console.shift(); });
+  await page.goto(`http://localhost:${port}/` + (process.env.CONTROL_QUERY || ""));
+  await new Promise((r) => setTimeout(r, 15000));
+  console.log(JSON.stringify({ control: out }));
+  process.exit(0);
+}
 setTimeout(() => {
   report.watchdog = "smoke test exceeded 400 s";
   console.log(JSON.stringify(report));

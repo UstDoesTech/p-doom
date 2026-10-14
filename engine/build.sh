@@ -10,16 +10,21 @@ SRC=$(cd "$1" && pwd)
 OUT=$(mkdir -p "$2" && cd "$2" && pwd)
 HERE=$(cd "$(dirname "$0")" && pwd)
 
-cp "$HERE/pdoom_state.c" "$SRC/src/doom/pdoom_state.c"
+if [ -z "${PDOOM_NO_SHIM:-}" ]; then
+  cp "$HERE/pdoom_state.c" "$SRC/src/doom/pdoom_state.c"
 
-# 1. Compile the shim with the rest of the game.
-sed -i 's|^g_game\.c |pdoom_state.c  \\\ng_game.c |' "$SRC/src/doom/Makefile.am"
-[ "$(grep -c '^pdoom_state.c' "$SRC/src/doom/Makefile.am")" = 1 ] || { echo "Makefile.am patch failed"; exit 1; }
+  # 1. Compile the shim with the rest of the game.
+  sed -i 's|^g_game\.c |pdoom_state.c  \\\ng_game.c |' "$SRC/src/doom/Makefile.am"
+  [ "$(grep -c '^pdoom_state.c' "$SRC/src/doom/Makefile.am")" = 1 ] || { echo "Makefile.am patch failed"; exit 1; }
 
-# 2. Re-apply the seed after Doom clears its random-number index when a level starts.
-sed -i 's|^    M_ClearRandom();|    M_ClearRandom();\n    pdoom_apply_seed();|' "$SRC/src/doom/g_game.c"
-sed -i '1i extern void pdoom_apply_seed(void);' "$SRC/src/doom/g_game.c"
-[ "$(grep -c 'pdoom_apply_seed();' "$SRC/src/doom/g_game.c")" = 1 ] || { echo "g_game.c patch failed"; exit 1; }
+  # 2. Re-apply the seed after Doom clears its random-number index when a level starts.
+  sed -i 's|^    M_ClearRandom();|    M_ClearRandom();\n    pdoom_apply_seed();|' "$SRC/src/doom/g_game.c"
+  sed -i '1i extern void pdoom_apply_seed(void);' "$SRC/src/doom/g_game.c"
+  [ "$(grep -c 'pdoom_apply_seed();' "$SRC/src/doom/g_game.c")" = 1 ] || { echo "g_game.c patch failed"; exit 1; }
+
+else
+  echo "PDOOM_NO_SHIM set: building doom-wasm without the p(doom) shim (control build)"
+fi
 
 # 3. SAFE_HEAP is a debug check that aborts on unaligned reads, which Doom does and WebAssembly allows.
 sed -i 's/ -s SAFE_HEAP=1//' "$SRC/configure.ac"
