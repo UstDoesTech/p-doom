@@ -14,7 +14,8 @@ permissions:
 
 env:
   DOOM_WASM_REF: 65e0d3ae2ffa604155eebd96ed40da6567bd08f4
-  EMSDK_VERSION: 3.1.74
+  # Emscripten 3.1.74 miscompiles doom-wasm: a live game traps in P_PlayerThink. 2.0.34, 3.0.0 and
+  # 3.1.10 all run it, so the engine is pinned to 3.1.10.
 
 jobs:
   build:
@@ -25,11 +26,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { name: shim, vanilla: '', emsdk: '3.1.74' }
-          - { name: control-3.1.74, vanilla: '1', emsdk: '3.1.74' }
-          - { name: control-3.1.10, vanilla: '1', emsdk: '3.1.10' }
-          - { name: control-3.0.0, vanilla: '1', emsdk: '3.0.0' }
-          - { name: control-2.0.34, vanilla: '1', emsdk: '2.0.34' }
+          - { name: shim, vanilla: '', emsdk: '3.1.10' }
     env:
       PDOOM_NO_SHIM: ${{ matrix.vanilla }}
     steps:
