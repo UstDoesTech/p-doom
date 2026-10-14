@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -14,6 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from . import __version__
 from .config import Settings, get_settings
 from .databricks_sql import SqlRunner
+from .lakebase import FanoutSink, PgSink, TokenSource
 from .models import (
     CreateSession,
     DecideRequest,
@@ -34,11 +36,31 @@ from .telemetry import JsonlSink, MemorySink, SqlSink, TelemetrySink
 log = logging.getLogger("pdoom")
 
 
+def build_lakebase_sink(settings: Settings) -> PgSink:
+    host = settings.pg_host or os.environ.get("PGHOST", "")
+    database = settings.pg_database or os.environ.get("PGDATABASE", "")
+    env = os.environ
+    user = settings.pg_user or env.get("PGUSER") or env.get("DATABRICKS_CLIENT_ID", "")
+    if not (host and database and user and settings.lakebase_endpoint):
+        raise RuntimeError(
+            "PDOOM_SINK=lakebase needs PDOOM_LAKEBASE_ENDPOINT plus a host, database and user "
+            "(PDOOM_PG_HOST/DATABASE/USER, or PGHOST/PGDATABASE/PGUSER)"
+        )
+    return PgSink(
+        host, database, user, TokenSource(settings.lakebase_endpoint), schema=settings.pg_schema
+    )
+
+
 def build_sink(settings: Settings, sql: SqlRunner | None) -> TelemetrySink:
+    if settings.sink in ("sql", "both") and sql is None:
+        raise RuntimeError(f"PDOOM_SINK={settings.sink} needs PDOOM_WAREHOUSE_ID")
     if settings.sink == "sql":
-        if sql is None:
-            raise RuntimeError("PDOOM_SINK=sql needs PDOOM_WAREHOUSE_ID")
         return SqlSink(sql)
+    if settings.sink == "lakebase":
+        return build_lakebase_sink(settings)
+    if settings.sink == "both":
+        # Lakebase first: its writes are idempotent, so a retry after a warehouse failure is safe.
+        return FanoutSink(build_lakebase_sink(settings), SqlSink(sql))
     if settings.sink == "jsonl":
         return JsonlSink(settings.jsonl_path)
     return MemorySink()
@@ -81,6 +103,7 @@ def create_app(
             "version": __version__,
             "sink": settings.sink,
             "databricks_configured": sql is not None,
+            "lakebase": settings.sink in ("lakebase", "both"),
             "model_version": settings.model_version,
         }
 

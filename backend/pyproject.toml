@@ -8,7 +8,8 @@ dependencies = [
   "uvicorn[standard]>=0.30",
   "pydantic>=2.7",
   "pydantic-settings>=2.3",
-  "databricks-sdk[openai]>=0.40",
+  "databricks-sdk[openai]>=0.81",
+  "psycopg[binary]>=3.2",
 ]
 
 [project.optional-dependencies]

@@ -14,9 +14,6 @@ on:
       schema: { default: pdoom }
       warehouse_id: { default: 4f084f656bc73157 }
       app_name: { default: pdoom }
-  push:
-    branches: [feat/databricks-app]
-    paths: [.github/workflows/app-verify.yml, scripts/verify_app.mjs]
 
 permissions:
   contents: read
@@ -72,3 +69,16 @@ jobs:
         run: |
           q=$(databricks api post /api/2.0/sql/statements --json "$(jq -nc --arg w "$WAREHOUSE" --arg s "SELECT player_type, engine, outcome, started_at FROM $CATALOG.$SCHEMA.doom_sessions ORDER BY started_at DESC LIMIT 5" '{warehouse_id:$w,wait_timeout:"50s",statement:$s}')" | jq -c '{state:.status.state, err:.status.error.message, rows:.result.data_array}')
           echo "::notice title=latest sessions::${q}"
+      - name: App logs from the session
+        if: always()
+        run: |
+          logs=$(databricks apps logs "$APP_NAME" --tail-lines 400 2>&1 | grep "\[APP\]" | grep -vE "GET |POST .* 20[0-9]" | tail -30 | cut -c1-400 | tr '\n' '|')
+          echo "::notice title=app log errors::${logs}"
+      - name: Did the session reach Lakebase
+        if: always()
+        run: |
+          set +e
+          out=$(scripts/pg.sh -At -F' | ' -c "select s.session_id, s.player_type, s.engine, s.outcome, (select count(*) from pdoom.doom_events e where e.session_id=s.session_id) as events, (select count(*) from pdoom.doom_decisions d where d.session_id=s.session_id) as decisions from pdoom.doom_sessions s order by s.started_at desc limit 3" 2>&1 | grep -v '^::add-mask')
+          echo "::notice title=lakebase latest sessions::${out:-none}"
+          tot=$(scripts/pg.sh -At -c "select (select count(*) from pdoom.doom_sessions)||' sessions, '||(select count(*) from pdoom.doom_events)||' events, '||(select count(*) from pdoom.doom_decisions)||' decisions'" 2>&1 | grep -v '^::add-mask')
+          echo "::notice title=lakebase totals::${tot}"

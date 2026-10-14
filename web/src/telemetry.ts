@@ -8,6 +8,7 @@ export class TelemetryBuffer {
   private queue: EventIn[] = [];
   private timer?: ReturnType<typeof setInterval>;
   private busy = false;
+  private inflight: Promise<boolean> | null = null;
 
   constructor(
     private api: Pick<Api, "sendEvents">,
@@ -26,8 +27,13 @@ export class TelemetryBuffer {
   }
 
   /** Send one batch. Returns false when the post failed or another flush is running. */
-  async flush(): Promise<boolean> {
-    if (this.busy) return false;
+  flush(): Promise<boolean> {
+    if (this.busy) return Promise.resolve(false);
+    this.inflight = this.send();
+    return this.inflight;
+  }
+
+  private async send(): Promise<boolean> {
     this.busy = true;
     const batch = this.queue.splice(0, BATCH);
     try {
@@ -44,6 +50,9 @@ export class TelemetryBuffer {
   /** Stop the timer and drain the queue, giving up after a few failures in a row. */
   async stop(): Promise<void> {
     if (this.timer) clearInterval(this.timer);
+    // A slow write from the timer may still be running. Wait for it, or the drain below would
+    // see "busy" three times in a row and give up with events still queued.
+    await this.inflight;
     let failures = 0;
     do {
       if (await this.flush()) failures = 0;
