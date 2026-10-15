@@ -1,0 +1,63 @@
+# Calls ai_decide for real, once over REST and once over SQL, and prints what came back.
+name: ai-decide
+on:
+  workflow_dispatch:
+  push:
+    branches: [feat/ai-decide-rest]
+    paths: [.github/workflows/ai-decide.yml, backend/src/pdoom/players/ai_decide.py]
+permissions:
+  contents: read
+env:
+  DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+  DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
+  DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+  PDOOM_WAREHOUSE_ID: 4f084f656bc73157
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install -e backend
+      - name: Probe both transports
+        working-directory: backend
+        run: |
+          python - <<'PY'
+          import json, os, time
+          from pdoom.databricks_sql import SqlRunner
+          from pdoom.models import GameState
+          from pdoom.players.ai_decide import AiDecideApi, AiDecidePlayer, load_questions
+
+          state = GameState.model_validate({
+              "tic": 1, "level": "E1M1", "seed": 1,
+              "player": {"health": 64, "armor": 0, "weapon": "pistol", "ammo": {"bullets": 40},
+                         "x": 0, "y": 0, "angle": 90},
+              "enemies": [{"type": "zombieman", "distance": 420, "bearing": -15, "line_of_sight": True}],
+              "pickups": [], "exit_bearing": 20,
+          })
+
+          def note(title, value):
+              text = json.dumps(value, default=str)[:1400].replace("\n", " ")
+              print(f"::notice title={title}::{text}")
+
+          api = AiDecideApi(load_questions())
+          try:
+              note("rest raw", api.run(state))
+          except Exception as exc:  # noqa: BLE001
+              note("rest raw error", f"{type(exc).__name__}: {exc}")
+
+          sql = SqlRunner(os.environ["PDOOM_WAREHOUSE_ID"], "workspace", "pdoom")
+          for name, player in (
+              ("rest only", AiDecidePlayer(api=api)),
+              ("sql only", AiDecidePlayer(sql)),
+              ("rest then sql", AiDecidePlayer(sql, api=api)),
+          ):
+              t0 = time.perf_counter()
+              d = player.decide(state)
+              secs = round(time.perf_counter() - t0, 2)
+              note(f"decision {name}", {"intent": d.intent, "error": d.error,
+                   "transport": (d.raw_output or {}).get("transport") if isinstance(d.raw_output, dict) else None,
+                   "rest_error": (d.raw_output or {}).get("rest_error") if isinstance(d.raw_output, dict) else None,
+                   "seconds": secs})
+          PY

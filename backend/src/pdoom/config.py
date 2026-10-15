@@ -31,6 +31,7 @@ class Settings(BaseSettings):
 
     model_version: str = "dev"
     vision_endpoint: str = ""
+    ai_decide_api: bool = True  # REST is primary for ai_decide; the warehouse is the backup
     agent_endpoint: str = ""  # chat endpoint with tool calling, for tool_agent
     rl_model: str = ""  # path override for the rl_policy weights
     bc_model: str = ""  # path override for the bc_policy model
