@@ -44,6 +44,8 @@ class Outcome(StrEnum):
     cleared = "cleared"
     died = "died"
     timeout = "timeout"
+    aborted = "aborted"  # the player pressed Stop
+    abandoned = "abandoned"  # the page closed mid-game
 
 
 Engine = Literal["wasm", "mock"]

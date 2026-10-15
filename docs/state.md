@@ -10,4 +10,4 @@ The engine returns a `GameState` (see `web/src/types.ts`, mirrored in `backend/s
 Bearings are degrees in -180..180. Positive means to the right (clockwise). Doom's own angles are
 counter-clockwise from east, so the engine shim must flip the sign when it converts.
 
-Outcomes: `cleared`, `died`, `timeout`. An aborted attempt is discarded and writes no session row.
+Outcomes: `cleared`, `died`, `timeout`, `aborted` (Stop pressed) and `abandoned` (page closed mid-game). The last two write a session row so abandonment can be monitored, but they are not attempts: the views leave them out of `attempts` and p(doom) and count them separately.

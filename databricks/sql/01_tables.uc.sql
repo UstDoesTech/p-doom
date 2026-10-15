@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS `{catalog}`.`{schema}`.doom_sessions (
   model_version STRING COMMENT 'Pinned model or prompt version. A change starts a new version',
   started_at TIMESTAMP COMMENT 'When the attempt started (UTC)',
   ended_at TIMESTAMP COMMENT 'When the attempt ended (UTC)',
-  outcome STRING COMMENT 'cleared (reached the exit), died, or timeout',
+  outcome STRING COMMENT 'cleared (reached the exit), died, timeout, aborted (Stop pressed) or abandoned (page closed). The last two are not attempts',
   duration_s DOUBLE COMMENT 'Seconds of play',
   kills INT COMMENT 'Enemies killed'
 )

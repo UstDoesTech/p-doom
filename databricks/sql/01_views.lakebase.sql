@@ -13,7 +13,7 @@ CREATE OR REPLACE VIEW `{catalog}`.`{schema}`.doom_sessions (
   model_version COMMENT 'Pinned model or prompt version. A change starts a new version',
   started_at COMMENT 'When the attempt started (UTC)',
   ended_at COMMENT 'When the attempt ended (UTC)',
-  outcome COMMENT 'cleared (reached the exit), died, or timeout',
+  outcome COMMENT 'cleared (reached the exit), died, timeout, aborted (Stop pressed) or abandoned (page closed). The last two are not attempts',
   duration_s COMMENT 'Seconds of play',
   kills COMMENT 'Enemies killed'
 )

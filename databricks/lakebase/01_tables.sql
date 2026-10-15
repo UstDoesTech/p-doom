@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS pdoom.doom_sessions (
 COMMENT ON TABLE pdoom.doom_sessions IS 'One row per attempt at a level, for every player type';
 COMMENT ON COLUMN pdoom.doom_sessions.mode IS 'paused or realtime. Never compare the two';
 COMMENT ON COLUMN pdoom.doom_sessions.engine IS 'wasm is the real Doom build. mock is the test arena; exclude it from results';
-COMMENT ON COLUMN pdoom.doom_sessions.outcome IS 'cleared, died or timeout';
+COMMENT ON COLUMN pdoom.doom_sessions.outcome IS 'cleared, died, timeout, aborted (Stop pressed) or abandoned (page closed). The last two are not attempts';
 
 CREATE TABLE IF NOT EXISTS pdoom.doom_events (
   session_id text NOT NULL REFERENCES pdoom.doom_sessions (session_id) ON DELETE CASCADE,
