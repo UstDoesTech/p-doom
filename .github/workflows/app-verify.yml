@@ -71,6 +71,8 @@ jobs:
           set +e
           out=$(timeout 280 node verify_app.mjs "$(cat $RUNNER_TEMP/url)" "$(cat $RUNNER_TEMP/tok)" rule_bot wasm 90 2>&1)
           echo "::notice title=rule_bot E1M1 90 s exit=$?::$(printf '%s' "$out" | tail -c 1200 | tr '\n' ' ')"
+          tr=$(printf '%s' "$out" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const r=JSON.parse(s.slice(s.indexOf("{")));console.log((r.trace||[]).map(t=>JSON.stringify(t)).join(";"))}catch(e){console.log("no trace")}})')
+          echo "::notice title=rule_bot E1M1 trace (tic x y angle intent rule route walls_ahead)::$(printf '%s' "$tr" | tail -c 9000)"
       - name: Play the other players and a stopped game (mock arena)
         run: |
           cd "$RUNNER_TEMP/v"

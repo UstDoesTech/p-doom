@@ -8,6 +8,7 @@ import { chromium } from "playwright";
 const [url, token, player = "rule_bot", engine = "wasm", cap = "15", stopAfter = ""] =
   process.argv.slice(2);
 const report = { console: [], pageErrors: [], failedRequests: [] };
+const trace = [];
 const browser = await chromium.launch({ channel: "chromium", args: ["--enable-unsafe-swiftshader"] });
 const timer = setTimeout(() => {
   report.timeout = true;
@@ -31,6 +32,17 @@ try {
   });
   page.on("pageerror", (e) => report.pageErrors.push(String(e).slice(0, 300)));
   page.on("requestfailed", (r) => report.failedRequests.push(`${r.url().slice(-60)} ${r.failure()?.errorText}`));
+  // Record what the bot saw and chose, from the decide calls, since the server may not keep them.
+  page.on("response", async (r) => {
+    if (!r.url().endsWith("/decide") || r.request().method() !== "POST") return;
+    try {
+      const st = JSON.parse(r.request().postData() || "{}").state;
+      const d = await r.json();
+      trace.push([st.tic, Math.round(st.player.x), Math.round(st.player.y), Math.round(st.player.angle),
+        d.intent, d.raw_output?.rule, st.route ? [st.route.via, Math.round(st.route.bearing), Math.round(st.route.distance), Math.round(st.route.remaining)] : null,
+        st.walls?.ahead]);
+    } catch {}
+  });
   page.on("response", (r) => {
     if (r.status() >= 400) report.failedRequests.push(`${r.status()} ${r.url().slice(-60)}`);
   });
@@ -70,6 +82,8 @@ try {
   report.exception = String(e).slice(0, 400);
 } finally {
   clearTimeout(timer);
+  // Every 8th decision plus the last 30, to keep the line short.
+  report.trace = trace.filter((_, i) => i % 8 === 0 || i >= trace.length - 30);
   console.log(JSON.stringify(report));
   await browser.close();
 }
