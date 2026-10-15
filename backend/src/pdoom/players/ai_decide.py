@@ -2,8 +2,8 @@
 
 ai_decide is a Beta feature with two ways in. The REST endpoint
 (POST /api/2.0/ai-functions/ai-decide) is the primary: no warehouse, state sent as JSON. The SQL
-function is the backup, used when the REST call fails or comes back without a usable answer. The questions argument of the SQL function
-must be a constant, so the JSON is embedded in the statement text, and the state goes in as a
+function is the backup, used when the REST call fails or comes back without a usable answer. The
+questions argument of the SQL function must be a constant, so the JSON is embedded in the statement text, and the state goes in as a
 parameter. to_json() turns the returned VARIANT into text the warehouse API hands back reliably.
 
 Each decision's raw_output carries "transport": "rest" or "sql", and "rest_error" when the backup

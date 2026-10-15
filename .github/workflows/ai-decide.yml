@@ -24,7 +24,7 @@ jobs:
         working-directory: backend
         run: |
           python - <<'PY'
-          import json, os
+          import json, os, time
           from pdoom.databricks_sql import SqlRunner
           from pdoom.models import GameState
           from pdoom.players.ai_decide import AiDecideApi, AiDecidePlayer, load_questions
@@ -53,9 +53,11 @@ jobs:
               ("sql only", AiDecidePlayer(sql)),
               ("rest then sql", AiDecidePlayer(sql, api=api)),
           ):
+              t0 = time.perf_counter()
               d = player.decide(state)
+              secs = round(time.perf_counter() - t0, 2)
               note(f"decision {name}", {"intent": d.intent, "error": d.error,
                    "transport": (d.raw_output or {}).get("transport") if isinstance(d.raw_output, dict) else None,
                    "rest_error": (d.raw_output or {}).get("rest_error") if isinstance(d.raw_output, dict) else None,
-                   "latency_note": "see timings below"})
+                   "seconds": secs})
           PY
