@@ -4,6 +4,11 @@ Rules run in priority order and the first that fires decides. The bot keeps a li
 attempt (the last position, health and what it was doing) to notice when it is stuck against a
 door or wall, when it is being hit by something it cannot see, and to dodge while fighting. The
 memory is keyed by level and seed and is dropped when the game tic runs backwards (a restart).
+
+The Doom engine also reports the scenery: wall distances all round, what `use` would do right now
+and a route to the exit through doors. The bot heads along the route, opens doors on the way,
+presses the exit switch, and turns away from walls instead of walking into them. The mock arena
+sends none of that, and then the bot falls back to the straight bearing to the exit.
 """
 
 from __future__ import annotations
@@ -27,6 +32,10 @@ MELEE_RANGE = 120.0
 DODGE_RANGE = 450.0  # alternate fire and strafe against enemies this close
 STUCK_MOVE = 6.0  # moved less than this since the last decision, while trying to advance
 HIT_SEARCH_TURNS = 2
+WALL_CLOSE = 48.0  # something this near dead ahead: stop walking at it
+KEY_RANGE = 400.0
+DOOR_WAIT = 2  # decisions to leave a door alone after pressing use: pressing again closes it
+SKIP_PICKUPS = 8  # decisions to ignore pickups after getting stuck on the way to one
 
 
 @dataclass
@@ -40,6 +49,9 @@ class Memory:
     dodge: int = 0
     search: int = 0
     flip: bool = False
+    door_wait: int = 0
+    skip_pickups: int = 0
+    turn_dir: int = 0  # sticky turn away from a wall, so it does not dither: -1 left, 1 right
     rules: list[str] = field(default_factory=list)
 
 
@@ -92,6 +104,13 @@ class RuleBot:
         else:
             mem.stuck = 0
 
+        if mem.door_wait > 0:
+            mem.door_wait -= 1
+        if mem.skip_pickups > 0:
+            mem.skip_pickups -= 1
+        if mem.stuck >= 3:
+            mem.skip_pickups = SKIP_PICKUPS
+
         if nearest and p.health < RETREAT_HEALTH and nearest.distance < ENGAGE_RANGE:
             return Intent.retreat, "low_health_retreat"
 
@@ -123,13 +142,13 @@ class RuleBot:
             mem.search = 0
 
         safe = nearest is None or nearest.distance > SAFE_DISTANCE
-        if safe:
+        if safe and mem.skip_pickups == 0:
             pickup = self._pickup_target(state, out_of_ammo)
             if pickup is not None:
                 bearing, rule = pickup
                 if abs(bearing) > PICKUP_ALIGN_DEG:
                     return (Intent.turn_left if bearing < 0 else Intent.turn_right), f"face_{rule}"
-                return self._advance_or_unstick(mem, rule)
+                return self._advance_or_unstick(mem, rule, state, bearing)
 
         return self._navigate(state, mem)
 
@@ -145,6 +164,8 @@ class RuleBot:
                 wants.append((item.distance, item.bearing, "weapon"))
             elif item.type == "armor" and p.armor < 50 and item.distance <= AMMO_RANGE / 2:
                 wants.append((item.distance, item.bearing, "armor"))
+            elif item.type == "key" and item.distance <= KEY_RANGE:
+                wants.append((item.distance, item.bearing, "key"))
         if not wants:
             return None
         _, bearing, rule = min(wants)
@@ -153,15 +174,50 @@ class RuleBot:
     def _navigate(
         self, state: GameState, mem: Memory, avoid_fight: bool = False
     ) -> tuple[Intent, str]:
-        bearing = state.exit_bearing
+        """Head for the exit: along the route when the engine gives one, opening doors and pressing
+        the exit switch, else straight at the exit bearing."""
+        route, target = state.route, state.use_target
+        suffix = "advance_to_exit" if avoid_fight else "advance"
+
+        if target is not None and not target.locked:
+            if target.kind == "exit":
+                return Intent.use, "press_exit"
+            if target.kind == "door" and not target.open and mem.door_wait == 0:
+                # Only a door on the way, or any door when nothing says where to go.
+                if route is None or route.via == "door" or abs(route.bearing) < 70:
+                    mem.door_wait = DOOR_WAIT
+                    return Intent.use, "open_door"
+        if mem.door_wait > 0 and mem.stuck == 0:
+            return Intent.advance, "through_door"
+
+        bearing = route.bearing if route is not None else state.exit_bearing
         if bearing is not None and abs(bearing) > EXIT_ALIGN_DEG and mem.stuck == 0:
             return (Intent.turn_left if bearing < 0 else Intent.turn_right), "face_exit"
-        return self._advance_or_unstick(mem, "advance_to_exit" if avoid_fight else "advance")
+        return self._advance_or_unstick(mem, suffix, state, bearing)
 
     @staticmethod
-    def _advance_or_unstick(mem: Memory, rule: str) -> tuple[Intent, str]:
-        """Walk forward. If that has not moved us, work through the usual causes in turn: a door
-        or switch that needs `use`, a corner to slide round, a wall to turn away from."""
+    def _wall_turn(state: GameState, mem: Memory, bearing: float | None) -> Intent:
+        """Which way to turn away from a wall dead ahead: towards where there is more room, with a
+        lean towards the goal, and sticking to it until the way is clear."""
+        w = state.walls
+        if mem.turn_dir == 0:
+            left, right = w.ahead_left + w.left * 0.5, w.ahead_right + w.right * 0.5
+            if bearing is not None:
+                (left, right) = (left + 30, right) if bearing < 0 else (left, right + 30)
+            mem.turn_dir = -1 if left > right else 1
+        return Intent.turn_left if mem.turn_dir < 0 else Intent.turn_right
+
+    def _advance_or_unstick(
+        self, mem: Memory, rule: str, state: GameState | None = None, bearing: float | None = None
+    ) -> tuple[Intent, str]:
+        """Walk forward. With wall distances, turn away from a wall dead ahead. If walking has not
+        moved us anyway, work through the usual causes in turn: a door or switch that needs `use`,
+        a corner to slide round, a wall to turn away from."""
+        walls = state.walls if state is not None else None
+        if walls is not None and mem.stuck == 0:
+            if walls.ahead < WALL_CLOSE:
+                return self._wall_turn(state, mem, bearing), "wall_turn"
+            mem.turn_dir = 0
         if mem.stuck == 0:
             return Intent.advance, rule
         step = (mem.stuck - 1) % 6

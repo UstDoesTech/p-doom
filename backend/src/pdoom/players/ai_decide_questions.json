@@ -1,16 +1,16 @@
 {
   "intent": {
     "type": "choice",
-    "instructions": "Which action should the player take for the next second to survive and reach the level exit? Bearings are in degrees relative to where the player faces: negative is left, positive is right.",
+    "instructions": "Which action should the player take for the next second to survive and reach the level exit? Bearings are in degrees relative to where the player faces: negative is left, positive is right. Distances are map units. walls gives the distance to the nearest wall in eight directions; a closed door counts as a wall, and under 48 the player is pressed against it, so walking forward does nothing. route is the way to the exit: head for route.bearing, and route.via says whether the next point is an opening (portal), a door, or the exit switch itself. use_target is what the use action would do right now; it is null when there is nothing to use. A closed door only opens with use, and pressing use again while it is still opening closes it, so after opening a door advance through it. interactables lists nearby doors, switches and the exit; locked means a key the player does not hold.",
     "criteria": {
-      "advance": "Move forward toward the exit or the next unexplored area",
-      "turn_left": "Rotate left to face an enemy or an opening",
-      "turn_right": "Rotate right to face an enemy or an opening",
-      "strafe_left": "Sidestep left to dodge fire",
-      "strafe_right": "Sidestep right to dodge fire",
+      "advance": "Walk forward when route.bearing is within about 15 degrees and walls.ahead is above 48, or to go through a door that has just been opened",
+      "turn_left": "Rotate left to face route.bearing, an enemy, or the open side when a wall is dead ahead",
+      "turn_right": "Rotate right to face route.bearing, an enemy, or the open side when a wall is dead ahead",
+      "strafe_left": "Sidestep left to dodge fire or to slide past a corner or pillar",
+      "strafe_right": "Sidestep right to dodge fire or to slide past a corner or pillar",
       "fire": "Shoot the nearest visible enemy",
-      "retreat": "Back away from enemies, or toward a health pickup",
-      "use": "Open the nearest door or press the nearest switch"
+      "retreat": "Back away from enemies, or toward a health pickup. Never to get past a wall",
+      "use": "Press use only when use_target is a closed door that is not locked, or the exit switch. Not when it is null"
     }
   },
   "threat": {

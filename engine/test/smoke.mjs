@@ -30,10 +30,10 @@ const port = server.address().port;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const report = { checks: {}, failed: [], errors: [] };
 setTimeout(() => {
-  report.failed.push("watchdog: exceeded 240 s");
+  report.failed.push("watchdog: exceeded 300 s");
   console.log(JSON.stringify(report));
   process.exit(2);
-}, 240000).unref();
+}, 300000).unref();
 
 const browser = await chromium.launch({ channel: "chromium", args: ["--enable-unsafe-swiftshader"] });
 const check = (name, ok, detail) => {
@@ -77,6 +77,23 @@ try {
   check("sees_pickups", s0.pickups.length > 0, s0.pickups.length);
   check("has_exit_bearing", typeof s0.exit_bearing === "number", s0.exit_bearing);
   check("bearing_in_range", Math.abs(s0.exit_bearing) <= 180);
+  // Scenery: walls all round, a route to the exit, and nothing to use at the start.
+  const W = ["ahead", "ahead_right", "right", "behind_right", "behind", "behind_left", "left", "ahead_left"];
+  check(
+    "walls_in_eight_directions",
+    !!s0.walls && W.every((k) => typeof s0.walls[k] === "number" && s0.walls[k] > 0 && s0.walls[k] <= 512),
+    s0.walls,
+  );
+  check("some_wall_is_close", !!s0.walls && W.some((k) => s0.walls[k] < 300), s0.walls);
+  check(
+    "has_route",
+    !!s0.route && Math.abs(s0.route.bearing) <= 180 && s0.route.distance > 0 && s0.route.hops > 0,
+    s0.route,
+  );
+  check("use_target_is_null_at_start", s0.use_target === null, s0.use_target);
+  check("interactables_is_a_list", Array.isArray(s0.interactables), s0.interactables?.length);
+  check("keys_is_a_list", Array.isArray(s0.keys) && s0.keys.length === 0, s0.keys);
+  check("has_exit_distance", typeof s0.exit_distance === "number" && s0.exit_distance > 0, s0.exit_distance);
   await sleep(2000);
   const sIdle = await state();
   report.checks.tics_per_second_idle = Math.round((sIdle.tic - s0.tic) / 2);
@@ -145,6 +162,53 @@ try {
   check("restart_resets_tic", r2.tic < 200, [r1.tic, r2.tic]);
   check("same_seed_same_start", r1.player.x === r2.player.x && r1.player.y === r2.player.y);
   check("level_after_restart", r2.level === "E1M1" && r2.player.health === 100);
+
+
+  // 6. Follow the route like a minimal bot: turn to the route bearing, walk, press use at a door
+  // or the exit. Shows the route leads somewhere and that use does what use_target says.
+  await call("pdoom_new_game", [1, 1, 7]);
+  await sleep(1500);
+  const n0 = await waitLevel(1);
+  const held = new Set();
+  const hold = async (key, down) => {
+    if (down === held.has(key.key)) return;
+    await press("document", down ? "keydown" : "keyup", key);
+    down ? held.add(key.key) : held.delete(key.key);
+  };
+  const LEFT = { key: "ArrowLeft", code: "ArrowLeft", keyCode: 37 };
+  const SPACE = { key: " ", code: "Space", keyCode: 32 };
+  let best = n0.route ? n0.route.hops : 99, bestDist = n0.exit_distance, usedDoor = 0, usedExit = 0;
+  let last = n0, outcome = "running", sinceUse = 99;
+  const navUntil = Date.now() + 100000;
+  while (Date.now() < navUntil) {
+    const s = await state();
+    last = s;
+    if (s.status !== "running") {
+      outcome = s.status;
+      break;
+    }
+    if (s.route) best = Math.min(best, s.route.hops);
+    if (s.exit_distance != null) bestDist = Math.min(bestDist, s.exit_distance);
+    const b = s.route ? s.route.bearing : s.exit_bearing ?? 0;
+    const wallAhead = s.walls ? s.walls.ahead : 999;
+    sinceUse++;
+    const t = s.use_target;
+    const wantUse = t && !t.locked && (t.kind === "exit" || (t.kind === "door" && !t.open)) && sinceUse > 4;
+    if (wantUse) {
+      sinceUse = 0;
+      t.kind === "exit" ? usedExit++ : usedDoor++;
+      await hold(SPACE, true);
+      await sleep(150);
+      await hold(SPACE, false);
+    }
+    await hold(LEFT, b < -12);
+    await hold(RIGHT, b > 12);
+    await hold(UP, Math.abs(b) < 25 && (wallAhead > 40 || sinceUse < 4));
+    await sleep(250);
+  }
+  for (const k of [LEFT, RIGHT, UP, SPACE]) await hold(k, false);
+  report.checks.nav = { outcome, hops_start: n0.route?.hops, hops_best: best, exit_dist_start: Math.round(n0.exit_distance), exit_dist_best: Math.round(bestDist), usedDoor, usedExit, tic: last.tic, health: last.player.health };
+  check("route_makes_progress", best < (n0.route?.hops ?? 99), [n0.route?.hops, best]);
 
   check("no_page_errors", report.errors.length === 0, report.errors.length);
 } catch (e) {

@@ -146,3 +146,95 @@ def test_restart_forgets_the_previous_attempt():
 def test_every_decision_says_which_rule_fired():
     d = RuleBot().decide(state(enemies=[enemy(3)]))
     assert d.raw_output["rule"] == "enemy_in_cone"
+
+
+# ---- scenery -----------------------------------------------------------------------------
+
+from pdoom.models import Route, UseTarget, Walls  # noqa: E402
+
+
+def scene(tic=1, x=0.0, y=0.0, route=None, use_target=None, walls=None, **kw) -> GameState:
+    s = state(tic=tic, x=x, y=y, **kw)
+    s.walls = walls or Walls(
+        ahead=512, ahead_right=512, right=512, behind_right=512, behind=512,
+        behind_left=512, left=512, ahead_left=512,
+    )
+    s.route = route
+    s.use_target = use_target
+    return s
+
+
+def test_steers_by_the_route_not_the_straight_line_to_the_exit():
+    # The exit is dead ahead through a wall; the route goes round to the right.
+    s = scene(exit_bearing=0.0, route=Route(bearing=70.0, distance=300, via="portal"))
+    d = RuleBot().decide(s)
+    assert d.intent == Intent.turn_right and d.raw_output["rule"] == "face_exit"
+
+
+def test_presses_the_exit_switch_when_in_reach():
+    s = scene(route=Route(bearing=0.0, distance=40, via="exit"),
+              use_target=UseTarget(kind="exit"))
+    d = RuleBot().decide(s)
+    assert d.intent == Intent.use and d.raw_output["rule"] == "press_exit"
+
+
+def test_opens_a_closed_door_on_the_route_once_then_walks_through():
+    bot = RuleBot()
+    door = UseTarget(kind="door", open=False)
+    route = Route(bearing=0.0, distance=40, via="door")
+    first = bot.decide(scene(tic=1, route=route, use_target=door))
+    assert (first.intent, first.raw_output["rule"]) == (Intent.use, "open_door")
+    # The door is still rising. Pressing use again would close it, so the bot walks.
+    second = bot.decide(scene(tic=36, x=0.0, route=route, use_target=door))
+    assert (second.intent, second.raw_output["rule"]) == (Intent.advance, "through_door")
+
+
+def test_leaves_a_locked_door_alone():
+    s = scene(route=Route(bearing=0.0, distance=40, via="door"),
+              use_target=UseTarget(kind="door", open=False, locked=True))
+    assert RuleBot().decide(s).raw_output["rule"] != "open_door"
+
+
+def test_does_not_press_a_plain_switch():
+    s = scene(exit_bearing=0.0, use_target=UseTarget(kind="switch"))
+    assert RuleBot().decide(s).intent == Intent.advance
+
+
+def test_turns_away_from_a_wall_towards_the_room():
+    walls = Walls(ahead=20, ahead_right=300, right=300, behind_right=512, behind=512,
+                  behind_left=512, left=30, ahead_left=25)
+    d = RuleBot().decide(scene(walls=walls))
+    assert d.intent == Intent.turn_right and d.raw_output["rule"] == "wall_turn"
+
+
+def test_wall_turn_keeps_its_direction_until_the_way_is_clear():
+    bot = RuleBot()
+    blocked = Walls(ahead=20, ahead_right=300, right=300, behind_right=512, behind=512,
+                    behind_left=512, left=30, ahead_left=25)
+    flipped = Walls(ahead=20, ahead_right=40, right=40, behind_right=512, behind=512,
+                    behind_left=512, left=300, ahead_left=300)
+    first = bot.decide(scene(tic=1, walls=blocked)).intent
+    second = bot.decide(scene(tic=2, x=0.0, walls=flipped)).intent  # would flip without memory
+    assert first == second == Intent.turn_right
+
+
+def test_wall_turn_leans_towards_the_goal():
+    even = Walls(ahead=20, ahead_right=200, right=200, behind_right=512, behind=512,
+                 behind_left=512, left=200, ahead_left=200)
+    d = RuleBot().decide(scene(walls=even, route=Route(bearing=-10.0, distance=200, via="portal")))
+    assert d.intent == Intent.turn_left
+
+
+def test_gives_up_on_a_pickup_it_cannot_reach():
+    bot = RuleBot()
+    seen = []
+    for tic in range(1, 8):
+        seen.append(bot.decide(scene(tic=tic, health=40, pickups=[pickup("health", 0.0, 200.0)],
+                                     exit_bearing=0.0)).raw_output["rule"])
+    assert seen[0] == "health"
+    assert any(r != "health" for r in seen[4:])
+
+
+def test_fetches_a_key_that_is_close():
+    d = RuleBot().decide(scene(pickups=[pickup("key", 0.0, 200.0)], exit_bearing=0.0))
+    assert d.raw_output["rule"] == "key"

@@ -82,6 +82,50 @@ class Pickup(BaseModel):
     bearing: float
 
 
+class Walls(BaseModel):
+    """Distance in map units to the nearest thing that blocks walking, capped at 512. A closed door
+    counts as a wall. Under about 40 the player is pressed against it."""
+
+    ahead: float
+    ahead_right: float
+    right: float
+    behind_right: float
+    behind: float
+    behind_left: float
+    left: float
+    ahead_left: float
+
+
+class Interactable(BaseModel):
+    """A door, switch or exit within 256 units. `facing` is false when the player is on the side
+    that cannot be used. `open` is for doors. `locked` means a key the player does not hold."""
+
+    kind: str
+    distance: float
+    bearing: float
+    facing: bool = True
+    open: bool = False
+    locked: bool = False
+
+
+class UseTarget(BaseModel):
+    """What pressing use does right now: the first door, switch or exit within reach ahead."""
+
+    kind: str
+    open: bool = False
+    locked: bool = False
+
+
+class Route(BaseModel):
+    """The next point to head for on the way to the exit, going through doors the player can open.
+    via: portal (an opening), door, or exit (the exit switch itself)."""
+
+    bearing: float
+    distance: float
+    via: str
+    hops: int = 0
+
+
 class GameState(BaseModel):
     tic: int
     level: str
@@ -90,6 +134,13 @@ class GameState(BaseModel):
     enemies: list[Enemy] = Field(default_factory=list, max_length=16)
     pickups: list[Pickup] = Field(default_factory=list, max_length=16)
     exit_bearing: float | None = None
+    exit_distance: float | None = None
+    # Scenery. The mock arena has none, and older engine builds do not send it.
+    walls: Walls | None = None
+    keys: list[str] = Field(default_factory=list, max_length=3)
+    interactables: list[Interactable] = Field(default_factory=list, max_length=8)
+    use_target: UseTarget | None = None
+    route: Route | None = None
 
 
 class Decision(BaseModel):

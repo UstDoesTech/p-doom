@@ -45,7 +45,7 @@ export default function App() {
   const [setNote, setSetNote] = useState("");
   const stopSet = useRef(false);
   const [intervalMs, setIntervalMs] = useState(1000);
-  const [timeoutS, setTimeoutS] = useState(120);
+  const [timeoutS, setTimeoutS] = useState(0);
 
   const [running, setRunning] = useState(false);
   const [hud, setHud] = useState<Hud | null>(null);
@@ -228,7 +228,7 @@ export default function App() {
           />
         </label>
         <label>
-          Time cap (game s)
+          Time cap (game s, 0 = none)
           <input
             type="number"
             value={timeoutS}

@@ -25,7 +25,8 @@ export interface RunnerConfig {
   decisionIntervalMs: number;
   /** Sample one telemetry event every this many tics. */
   eventEveryTics: number;
-  /** Game-time cap in seconds. The session ends as a timeout. */
+  /** Game-time cap in seconds. The session ends as a timeout. 0 means no cap: play until the
+   * level is cleared or the player dies, or Stop is pressed. */
   timeoutS: number;
   /** Milliseconds between loop ticks. */
   tickMs?: number;
@@ -173,7 +174,8 @@ export class SessionRunner {
           if (this.abandoned) return finish("abandoned");
           if (this.aborted) return finish("aborted");
           if (status !== "running") return finish(status);
-          if ((state.tic - startTic) / TIC_RATE >= cfg.timeoutS) return finish("timeout");
+          if (cfg.timeoutS > 0 && (state.tic - startTic) / TIC_RATE >= cfg.timeoutS)
+            return finish("timeout");
 
           if (!isHuman) {
             reflex.apply();
