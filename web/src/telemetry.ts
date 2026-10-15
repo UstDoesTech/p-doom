@@ -60,12 +60,6 @@ export class TelemetryBuffer {
     } while (this.queue.length > 0);
   }
 
-  /** Drop everything without sending. For aborted sessions. */
-  discard(): void {
-    if (this.timer) clearInterval(this.timer);
-    this.queue = [];
-  }
-
   get pending(): number {
     return this.queue.length;
   }

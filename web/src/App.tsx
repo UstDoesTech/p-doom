@@ -112,7 +112,7 @@ export default function App() {
       const r = await runner.run(canvas);
       setResult(
         r.outcome === "aborted"
-          ? "Stopped. This attempt was discarded and will not count."
+          ? "Stopped. The attempt is recorded as aborted and does not count toward p(doom)."
           : `${r.outcome} after ${r.durationS.toFixed(1)} s, ${r.kills} kills`,
       );
       setSeed((s) => s + 1);
@@ -204,7 +204,7 @@ export default function App() {
         </label>
         {running ? (
           <button className="stop" onClick={() => runnerRef.current?.abort()}>
-            Stop and discard
+            Stop
           </button>
         ) : (
           <button onClick={start}>Start</button>

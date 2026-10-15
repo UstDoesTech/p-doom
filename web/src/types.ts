@@ -28,7 +28,9 @@ export type PlayerType = (typeof PLAYER_TYPES)[number];
 
 export type Mode = "paused" | "realtime";
 export type EngineKind = "wasm" | "mock";
-export type Outcome = "cleared" | "died" | "timeout";
+/** aborted: the player pressed Stop. abandoned: the page closed mid-game. Neither counts as an
+ * attempt in p(doom), but both are stored so abandonment can be monitored. */
+export type Outcome = "cleared" | "died" | "timeout" | "aborted" | "abandoned";
 export type EngineStatus = "running" | "cleared" | "died";
 
 export interface PlayerState {

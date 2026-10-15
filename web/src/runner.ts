@@ -39,8 +39,7 @@ export interface RunnerHooks {
 
 export interface RunResult {
   sessionId: string;
-  /** "aborted" sessions are discarded: no session row is written, so they never count. */
-  outcome: Outcome | "aborted";
+  outcome: Outcome;
   durationS: number;
   kills: number;
 }
@@ -65,6 +64,7 @@ function toEvent(state: GameState, action: string | null): EventIn {
 
 export class SessionRunner {
   private aborted = false;
+  private abandoned = false;
 
   constructor(
     private engine: Engine,
@@ -130,8 +130,19 @@ export class SessionRunner {
       }
     };
 
-    const outcome = await new Promise<Outcome | "aborted">((resolve) => {
-      const finish = (o: Outcome | "aborted") => {
+    // Closing the tab mid-game: the normal end call would never finish, so send a keepalive one.
+    const onHide = () => {
+      if (done || this.abandoned) return;
+      this.abandoned = true;
+      api.abandonSession(session.session_id, {
+        duration_s: (lastState.tic - startTic) / TIC_RATE,
+        kills: engine.kills(),
+      });
+    };
+    globalThis.addEventListener?.("pagehide", onHide);
+
+    const outcome = await new Promise<Outcome>((resolve) => {
+      const finish = (o: Outcome) => {
         done = true;
         clearInterval(timer);
         resolve(o);
@@ -148,6 +159,7 @@ export class SessionRunner {
         }
         hooks.onTick?.(state, reflex.current());
 
+        if (this.abandoned) return finish("abandoned");
         if (this.aborted) return finish("aborted");
         if (status !== "running") return finish(status);
         if ((state.tic - startTic) / TIC_RATE >= cfg.timeoutS) return finish("timeout");
@@ -162,6 +174,7 @@ export class SessionRunner {
       }, cfg.tickMs ?? 30);
     });
 
+    globalThis.removeEventListener?.("pagehide", onHide);
     reflex.releaseAll();
     human.detach();
     if (engine.canPause()) engine.pause();
@@ -172,10 +185,8 @@ export class SessionRunner {
       kills: engine.kills(),
     };
 
-    if (outcome === "aborted") {
-      telemetry.discard();
-      return result;
-    }
+    // The keepalive call already ended an abandoned session; the page is going away.
+    if (outcome === "abandoned") return result;
 
     await telemetry.stop();
     if (telemetry.pending > 0) hooks.onError?.(`${telemetry.pending} events were not delivered`);

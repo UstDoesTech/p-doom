@@ -57,6 +57,8 @@ export interface Api {
     sessionId: string,
     body: { outcome: Outcome; duration_s: number; kills: number },
   ): Promise<void>;
+  /** Fire-and-forget end for a closing page: keepalive lets it outlive the page. */
+  abandonSession(sessionId: string, body: { duration_s: number; kills: number }): void;
 }
 
 export const api: Api = {
@@ -68,5 +70,13 @@ export const api: Api = {
   },
   endSession: async (id, body) => {
     await post(`/sessions/${id}/end`, body);
+  },
+  abandonSession: (id, body) => {
+    void fetch(`${BASE}/api/sessions/${id}/end`, {
+      method: "POST",
+      keepalive: true,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ outcome: "abandoned", ...body }),
+    }).catch(() => {});
   },
 };

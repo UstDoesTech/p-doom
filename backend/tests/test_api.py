@@ -126,3 +126,14 @@ def test_a_crashing_player_is_logged_as_a_failed_decision_not_a_500():
     body = client.post(f"/api/sessions/{sid}/decide", json={"state": STATE})
     assert body.status_code == 200
     assert body.json()["intent"] is None and "boom" in body.json()["error"]
+
+
+def test_stopped_and_abandoned_games_write_a_session_row():
+    for outcome in ("aborted", "abandoned"):
+        client, sink = make()
+        sid = start(client).json()["session_id"]
+        ended = client.post(
+            f"/api/sessions/{sid}/end", json={"outcome": outcome, "duration_s": 3.0, "kills": 1}
+        )
+        assert ended.status_code == 200
+        assert [r.outcome for r in sink.sessions] == [outcome]

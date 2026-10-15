@@ -73,6 +73,7 @@ function fakeApi(engine: FakeEngine) {
     },
     sendEvents: async (_id, events) => void (log.events += events.length),
     endSession: async (_id, body) => void log.ended.push({ outcome: body.outcome, kills: body.kills }),
+    abandonSession: (_id, body) => void log.ended.push({ outcome: "abandoned", kills: body.kills }),
   };
   return { api, log };
 }
@@ -114,7 +115,7 @@ describe("SessionRunner", () => {
     expect(log.ended[0].outcome).toBe("timeout");
   });
 
-  it("discards an aborted session without writing a session row", async () => {
+  it("records a stopped session as aborted, with its events", async () => {
     const engine = new FakeEngine();
     const { api, log } = fakeApi(engine);
     const runner = new SessionRunner(engine, api, cfg());
@@ -122,7 +123,26 @@ describe("SessionRunner", () => {
     setTimeout(() => runner.abort(), 20);
     const result = await run;
     expect(result.outcome).toBe("aborted");
-    expect(log.ended).toEqual([]);
+    expect(log.ended).toEqual([{ outcome: "aborted", kills: 2 }]);
+    expect(log.events).toBeGreaterThan(0);
+  });
+
+  it("records a closing page as abandoned, once, and does not also end normally", async () => {
+    const handlers: Record<string, () => void> = {};
+    const g = globalThis as unknown as Record<string, unknown>;
+    g.addEventListener = (name: string, fn: () => void) => void (handlers[name] = fn);
+    g.removeEventListener = () => {};
+    try {
+      const engine = new FakeEngine();
+      const { api, log } = fakeApi(engine);
+      const run = new SessionRunner(engine, api, cfg()).run(canvas);
+      setTimeout(() => handlers.pagehide(), 20);
+      await run.catch(() => {});
+      expect(log.ended).toEqual([{ outcome: "abandoned", kills: 2 }]);
+    } finally {
+      delete g.addEventListener;
+      delete g.removeEventListener;
+    }
   });
 
   it("refuses paused mode on an engine that cannot pause", async () => {
