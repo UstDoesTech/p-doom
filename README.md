@@ -30,7 +30,10 @@ With `PDOOM_SINK=jsonl` nothing needs Databricks. For Databricks: set the `DATAB
 | Vision player | Written, never run against an endpoint |
 | Doom WASM engine | Builds in CI (Emscripten 3.1.10) and passes a headless-Chromium check: live E1M1 state, keyboard, firing, pause/resume, seed restart |
 | Databricks App | `app.yml` builds engine + web + backend, deploys with the bundle, then plays a rule_bot session on real Doom in a browser against the deployed app and checks the row in Unity Catalog. Not yet in the container image |
-| tool_agent, rl_policy, bc_policy, supervisor | Planned. The API returns 501 |
+| `rl_policy` | Linear softmax policy trained with REINFORCE in the Python mock arena (`pdoom.train.rl`). Weights are committed; 95% cleared on held-out mock seeds against rule_bot's 0%. Never run on real Doom, so transfer is unknown |
+| `bc_policy` | k-nearest-neighbours over human sessions (`pdoom.train.bc`). Unit tested with synthetic data; unavailable until real human sessions exist to build the model |
+| `tool_agent` | LLM function-calling loop (scan tools, then `act`). Unit tested with a fake client; set `PDOOM_AGENT_ENDPOINT` to a tool-calling chat endpoint. Never run against a real endpoint |
+| `supervisor` | Runs rule_bot every call, sends navigation and combat to the first available learned worker and keeps stuck and pickup with rule_bot; falls back to rule_bot if the worker fails. Unit tested |
 | Bundle, `app.yml`, `databricks.yml` workflows | Run |
 | Bicep, Dockerfile, `deploy.yml` (Azure) | Never validated or run |
 

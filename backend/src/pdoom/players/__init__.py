@@ -7,18 +7,16 @@ from ..databricks_sql import SqlRunner
 from ..models import PlayerType
 from .ai_decide import AiDecidePlayer
 from .base import Player, PlayerUnavailable
+from .bc_policy import DEFAULT_MODEL as BC_DEFAULT
+from .bc_policy import BcPolicy
+from .rl_policy import DEFAULT_WEIGHTS as RL_DEFAULT
+from .rl_policy import RlPolicy
 from .rule_bot import RuleBot
+from .supervisor import Supervisor
+from .tool_agent import ToolAgent
 from .vision_llm import VisionPlayer
 
 __all__ = ["PlayerRegistry", "PlayerUnavailable", "build_registry"]
-
-PLANNED = (
-    PlayerType.tool_agent,
-    PlayerType.rl_policy,
-    PlayerType.bc_policy,
-    PlayerType.supervisor,
-)
-
 
 class PlayerRegistry:
     def __init__(self) -> None:
@@ -63,6 +61,26 @@ def build_registry(settings: Settings, sql: SqlRunner | None) -> PlayerRegistry:
     else:
         reg.mark_unavailable(PlayerType.vision_llm, 503, "PDOOM_VISION_ENDPOINT is not set")
 
-    for pt in PLANNED:
-        reg.mark_unavailable(pt, 501, "Planned, not built yet")
+    for player_type, loader in (
+        (PlayerType.rl_policy, lambda: RlPolicy.from_file(settings.rl_model or RL_DEFAULT)),
+        (PlayerType.bc_policy, lambda: BcPolicy.from_file(settings.bc_model or BC_DEFAULT)),
+    ):
+        try:
+            reg.register(loader())
+        except PlayerUnavailable as exc:
+            reg.mark_unavailable(player_type, exc.status_code, exc.reason)
+
+    if settings.agent_endpoint:
+        reg.register(ToolAgent(settings.agent_endpoint))
+    else:
+        reg.mark_unavailable(PlayerType.tool_agent, 503, "PDOOM_AGENT_ENDPOINT is not set")
+
+    workers = [
+        p for name in settings.supervisor_workers
+        if (p := reg._players.get(PlayerType(name))) is not None  # noqa: SLF001
+    ]
+    if workers:
+        reg.register(Supervisor(workers))
+    else:
+        reg.mark_unavailable(PlayerType.supervisor, 503, "No worker players to route to")
     return reg

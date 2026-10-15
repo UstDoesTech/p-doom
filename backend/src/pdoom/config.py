@@ -31,6 +31,10 @@ class Settings(BaseSettings):
 
     model_version: str = "dev"
     vision_endpoint: str = ""
+    agent_endpoint: str = ""  # chat endpoint with tool calling, for tool_agent
+    rl_model: str = ""  # path override for the rl_policy weights
+    bc_model: str = ""  # path override for the bc_policy model
+    supervisor_workers: list[str] = ["rl_policy", "bc_policy", "tool_agent", "ai_decide"]
 
     static_dir: str = ""
     cors_origins: list[str] = ["http://localhost:5173"]
