@@ -20,6 +20,7 @@ STEP_HEIGHT = 24.0
 RAY_MAX = 512.0
 USE_RANGE = 64.0
 RADIUS = 16.0
+WALK_BOX = 14.0
 ML_BLOCKING = 1
 
 WALL_BEARINGS = [0, 45, 90, 135, 180, -135, -90, -45]
@@ -270,11 +271,30 @@ class Level:
                         out.append(ln)
         return out
 
+    @staticmethod
+    def _touches_box(ln, x, y, h):
+        dx, dy = ln.x2 - ln.x1, ln.y2 - ln.y1
+        t0, t1 = 0.0, 1.0
+        for p, q in ((-dx, ln.x1 - (x - h)), (dx, (x + h) - ln.x1), (-dy, ln.y1 - (y - h)), (dy, (y + h) - ln.y1)):
+            if abs(p) < 1e-12:
+                if q < 0:
+                    return False
+            else:
+                r = q / p
+                if p < 0:
+                    if r > t1:
+                        return False
+                    t0 = max(t0, r)
+                else:
+                    if r < t0:
+                        return False
+                    t1 = min(t1, r)
+        return True
+
     def _near_lines_blocked(self, g, x, y):
         z = self.sector_at(x, y).floor
-        for ln in self._lines_near(g, x, y, x, y, RADIUS):
-            d, _, _ = self.line_distance(x, y, ln)
-            if d >= RADIUS:
+        for ln in self._lines_near(g, x, y, x, y, WALK_BOX):
+            if not self._touches_box(ln, x, y, WALK_BOX):
                 continue
             if ln.back is None or ln.flags & ML_BLOCKING:
                 return True

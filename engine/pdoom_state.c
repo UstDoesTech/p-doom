@@ -353,7 +353,7 @@ static const char *WALL_NAMES[8] = {"ahead",  "ahead_right", "right",      "behi
 
 #define CELL 32.0
 #define MAX_CELLS 200000
-#define WALK_RADIUS 16.0
+#define WALK_RADIUS 14.0
 
 static int g_w = 0, g_h = 0, g_ok = 0, g_lines = 0, g_field_keys = -1;
 static double g_ox = 0.0, g_oy = 0.0;
@@ -389,17 +389,43 @@ static const sector_t *sector_at(double x, double y) { return R_PointInSubsector
 static double cell_x(int ix) { return g_ox + (ix + 0.5) * CELL; }
 static double cell_y(int iy) { return g_oy + (iy + 0.5) * CELL; }
 
+/* Does the segment of this line touch the square of half-width h around (x, y)? Doom's player is a
+ * square 32 units wide for collision, so its corners catch on wall ends a circle would clear. */
+static int line_touches_box(const line_t *l, double x, double y, double h)
+{
+    double x1 = lx1(l), y1 = ly1(l), dx = lx2(l) - x1, dy = ly2(l) - y1;
+    double t0 = 0.0, t1 = 1.0;
+    double p[4] = {-dx, dx, -dy, dy};
+    double q[4] = {x1 - (x - h), (x + h) - x1, y1 - (y - h), (y + h) - y1};
+    int i;
+    for (i = 0; i < 4; i++) {
+        if (fabs(p[i]) < 1e-12) {
+            if (q[i] < 0.0) return 0;
+        } else {
+            double r = q[i] / p[i];
+            if (p[i] < 0.0) {
+                if (r > t1) return 0;
+                if (r > t0) t0 = r;
+            } else {
+                if (r < t0) return 0;
+                if (r < t1) t1 = r;
+            }
+        }
+    }
+    return 1;
+}
+
 static int cell_walkable(double x, double y)
 {
     double z = (double)sector_at(x, y)->floorheight / 65536.0;
     int i;
     for (i = 0; i < numlines; i++) {
         const line_t *l = &lines[i];
-        double cx, cy, hi;
+        double hi;
         if (fmin(lx1(l), lx2(l)) > x + WALK_RADIUS || fmax(lx1(l), lx2(l)) < x - WALK_RADIUS ||
             fmin(ly1(l), ly2(l)) > y + WALK_RADIUS || fmax(ly1(l), ly2(l)) < y - WALK_RADIUS)
             continue;
-        if (seg_distance(x, y, l, &cx, &cy) >= WALK_RADIUS) continue;
+        if (!line_touches_box(l, x, y, WALK_RADIUS)) continue;
         if (l->backsector == NULL || (l->flags & ML_BLOCKING)) return 0;
         if (is_door(l->special)) continue;
         if (!gap_open(l)) return 0;
