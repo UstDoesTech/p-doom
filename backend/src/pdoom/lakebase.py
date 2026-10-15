@@ -147,6 +147,10 @@ class PgSink:
     def write_sessions(self, rows: Sequence[SessionRow]) -> None:
         self._insert("doom_sessions", rows)
 
+    # The session row is upserted, so it can be written when the game opens (outcome empty) and
+    # again, filled in, when it ends. A row left open means the app restarted mid-game.
+    write_open_session = write_sessions
+
     def write_events(self, rows: Sequence[EventRow]) -> None:
         self._insert("doom_events", rows)
 
@@ -178,3 +182,13 @@ class FanoutSink:
     def write_decisions(self, rows: Sequence[DecisionRow]) -> None:
         for s in self.sinks:
             s.write_decisions(rows)
+
+    def write_open_session(self, rows: Sequence[SessionRow]) -> None:
+        """Only sinks that upsert sessions take the half-filled row. The others would end up
+        with two rows for one game."""
+        for s in self.sinks:
+            if hasattr(s, "write_open_session"):
+                s.write_open_session(rows)
+
+    def ping(self) -> bool:
+        return all(s.ping() for s in self.sinks if hasattr(s, "ping"))

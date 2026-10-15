@@ -3,7 +3,8 @@ import { api } from "./api";
 import type { Engine } from "./engine/Engine";
 import { MockEngine } from "./engine/MockEngine";
 import { WasmEngine } from "./engine/WasmEngine";
-import { SessionRunner } from "./runner";
+import { planSet, runSet } from "./batch";
+import { SessionRunner, type RunResult } from "./runner";
 import {
   PLAYER_TYPES,
   type Decision,
@@ -39,6 +40,10 @@ export default function App() {
   const [wasmAvailable, setWasmAvailable] = useState<boolean | null>(null);
   const [level, setLevel] = useState("E1M1");
   const [seed, setSeed] = useState(1);
+  const [seedTo, setSeedTo] = useState(10);
+  const [roster, setRoster] = useState<PlayerType[]>(["rule_bot"]);
+  const [setNote, setSetNote] = useState("");
+  const stopSet = useRef(false);
   const [intervalMs, setIntervalMs] = useState(1000);
   const [timeoutS, setTimeoutS] = useState(120);
 
@@ -69,7 +74,8 @@ export default function App() {
 
   const availability = (pt: PlayerType) => players.find((p) => p.player_type === pt);
 
-  const start = async () => {
+  /** One game. Returns null when it could not start, with the reason shown on the page. */
+  const runOne = async (pt: PlayerType, sd: number): Promise<RunResult | null> => {
     setError("");
     setResult("");
     setLog([]);
@@ -81,11 +87,11 @@ export default function App() {
       engine,
       api,
       {
-        playerType,
+        playerType: pt,
         mode,
         engine: engineKind,
         level,
-        seed,
+        seed: sd,
         decisionIntervalMs: intervalMs,
         eventEveryTics: 5,
         timeoutS,
@@ -113,15 +119,43 @@ export default function App() {
       setResult(
         r.outcome === "aborted"
           ? "Stopped. The attempt is recorded as aborted and does not count toward p(doom)."
-          : `${r.outcome} after ${r.durationS.toFixed(1)} s, ${r.kills} kills`,
+          : r.outcome === "error"
+            ? "The game loop crashed. Recorded as an error; it does not count toward p(doom)."
+            : `${pt} on seed ${sd}: ${r.outcome} after ${r.durationS.toFixed(1)} s, ${r.kills} kills`,
       );
-      setSeed((s) => s + 1);
+      return r;
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+      return null;
     } finally {
       runnerRef.current = null;
       setRunning(false);
     }
+  };
+
+  const start = async () => {
+    const r = await runOne(playerType, seed);
+    if (r) setSeed((s) => s + 1);
+  };
+
+  const startSet = async () => {
+    stopSet.current = false;
+    const jobs = planSet(roster, seed, seedTo);
+    setSetNote(`Set of ${jobs.length} games`);
+    const out = await runSet(
+      jobs,
+      async (job) => (await runOne(job.playerType, job.seed)) ?? { outcome: "error" },
+      {
+        stop: () => stopSet.current,
+        onProgress: (p) =>
+          setSetNote(`Game ${p.done + 1} of ${p.total}: ${p.job.playerType}, seed ${p.job.seed}`),
+      },
+    );
+    setSetNote(
+      out.stoppedBy === "done"
+        ? `Set finished: ${out.finished} games`
+        : `Set stopped after ${out.finished} of ${jobs.length} games`,
+    );
   };
 
   return (
@@ -203,12 +237,57 @@ export default function App() {
           />
         </label>
         {running ? (
-          <button className="stop" onClick={() => runnerRef.current?.abort()}>
+          <button
+            className="stop"
+            onClick={() => {
+              stopSet.current = true;
+              runnerRef.current?.abort();
+            }}
+          >
             Stop
           </button>
         ) : (
           <button onClick={start}>Start</button>
         )}
+      </section>
+
+      <section className="panel controls">
+        <strong>Run a set</strong>
+        {PLAYER_TYPES.filter((pt) => pt !== "human").map((pt) => {
+          const a = availability(pt);
+          const off = !!a && !a.available;
+          return (
+            <label key={pt} title={a?.reason ?? ""}>
+              <input
+                type="checkbox"
+                disabled={running || off}
+                checked={roster.includes(pt)}
+                onChange={(e) =>
+                  setRoster((cur) =>
+                    e.target.checked ? [...cur, pt] : cur.filter((x) => x !== pt),
+                  )
+                }
+              />{" "}
+              {pt}
+            </label>
+          );
+        })}
+        <label>
+          Seeds {seed} to
+          <input
+            type="number"
+            value={seedTo}
+            disabled={running}
+            onChange={(e) => setSeedTo(Number(e.target.value))}
+          />
+        </label>
+        <button
+          disabled={running || roster.length === 0 || seedTo < seed}
+          onClick={startSet}
+        >
+          Run set
+        </button>
+        {setNote && <span className="note">{setNote}</span>}
       </section>
 
       {engineKind === "mock" && (

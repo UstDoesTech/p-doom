@@ -16,6 +16,8 @@ from typing import Any
 from ..models import Decision, GameState, Intent, PlayerType
 
 MAX_TURNS = 5
+DEADLINE_S = 20.0  # for the whole loop
+CALL_TIMEOUT_S = 10.0  # for one model call
 
 TOOLS: list[dict[str, Any]] = [
     {
@@ -112,8 +114,13 @@ class ToolAgent:
             kw.setdefault("raw_output", {"calls": trace})
             return Decision(latency_ms=int((time.perf_counter() - t0) * 1000), **kw)
 
+        deadline = t0 + DEADLINE_S
         for _ in range(MAX_TURNS):
+            remaining = deadline - time.perf_counter()
+            if remaining <= 0.5:
+                return done(error=f"Agent ran out of time after {DEADLINE_S:.0f} s")
             reply = self.client.chat.completions.create(
+                timeout=min(CALL_TIMEOUT_S, remaining),
                 model=self.endpoint,
                 temperature=0,
                 max_tokens=300,

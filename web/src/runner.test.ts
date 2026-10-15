@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Api } from "./api";
+import { ApiTimeout, type Api } from "./api";
 import type { Engine } from "./engine/Engine";
 import { SessionRunner, type RunnerConfig } from "./runner";
 import type { Decision, EngineStatus, GameKey, GameState } from "./types";
@@ -49,11 +49,11 @@ class FakeEngine implements Engine {
   stop() {}
 }
 
-function fakeApi(engine: FakeEngine) {
+function fakeApi(engine: FakeEngine, failDecide = false, failCreate = false) {
   const log = {
     decidedWhilePaused: [] as boolean[],
     events: 0,
-    ended: [] as Array<{ outcome: string; kills: number }>,
+    ended: [] as Array<{ outcome: string; kills: number; timeouts: number }>,
     created: 0,
   };
   const decision: Decision = {
@@ -66,14 +66,29 @@ function fakeApi(engine: FakeEngine) {
   };
   const api: Api = {
     players: async () => [],
-    createSession: async () => ((log.created += 1), { session_id: "s1", model_version: "t" }),
+    createSession: async () => {
+      log.created += 1;
+      if (failCreate) throw new Error("503 unavailable");
+      return { session_id: "s1", model_version: "t" };
+    },
     decide: async () => {
       log.decidedWhilePaused.push(engine.paused);
+      if (failDecide) throw new ApiTimeout("/sessions/s1/decide", 25000);
       return decision;
     },
     sendEvents: async (_id, events) => void (log.events += events.length),
-    endSession: async (_id, body) => void log.ended.push({ outcome: body.outcome, kills: body.kills }),
-    abandonSession: (_id, body) => void log.ended.push({ outcome: "abandoned", kills: body.kills }),
+    endSession: async (_id, body) =>
+      void log.ended.push({
+        outcome: body.outcome,
+        kills: body.kills,
+        timeouts: body.decision_timeouts,
+      }),
+    abandonSession: (_id, body) =>
+      void log.ended.push({
+        outcome: "abandoned",
+        kills: body.kills,
+        timeouts: body.decision_timeouts,
+      }),
   };
   return { api, log };
 }
@@ -100,7 +115,7 @@ describe("SessionRunner", () => {
     const result = await new SessionRunner(engine, api, cfg()).run(canvas);
 
     expect(result.outcome).toBe("died");
-    expect(log.ended).toEqual([{ outcome: "died", kills: 2 }]);
+    expect(log.ended).toEqual([{ outcome: "died", kills: 2, timeouts: 0 }]);
     expect(log.events).toBeGreaterThan(5);
     expect(log.decidedWhilePaused.length).toBeGreaterThan(0);
     expect(log.decidedWhilePaused.every(Boolean)).toBe(true);
@@ -123,7 +138,7 @@ describe("SessionRunner", () => {
     setTimeout(() => runner.abort(), 20);
     const result = await run;
     expect(result.outcome).toBe("aborted");
-    expect(log.ended).toEqual([{ outcome: "aborted", kills: 2 }]);
+    expect(log.ended).toEqual([{ outcome: "aborted", kills: 2, timeouts: 0 }]);
     expect(log.events).toBeGreaterThan(0);
   });
 
@@ -138,7 +153,7 @@ describe("SessionRunner", () => {
       const run = new SessionRunner(engine, api, cfg()).run(canvas);
       setTimeout(() => handlers.pagehide(), 20);
       await run.catch(() => {});
-      expect(log.ended).toEqual([{ outcome: "abandoned", kills: 2 }]);
+      expect(log.ended).toEqual([{ outcome: "abandoned", kills: 2, timeouts: 0 }]);
     } finally {
       delete g.addEventListener;
       delete g.removeEventListener;
@@ -157,5 +172,44 @@ describe("SessionRunner", () => {
     const { api, log } = fakeApi(engine);
     await new SessionRunner(engine, api, cfg({ mode: "realtime" })).run(canvas);
     expect(log.decidedWhilePaused.some(Boolean)).toBe(false);
+  });
+
+  it("counts decision timeouts on the session and keeps the game moving", async () => {
+    const engine = new FakeEngine(100);
+    const { api, log } = fakeApi(engine, true);
+    const errors: string[] = [];
+    const result = await new SessionRunner(engine, api, cfg(), {
+      onError: (m) => errors.push(m),
+    }).run(canvas);
+    expect(result.outcome).toBe("died");
+    expect(log.ended[0].timeouts).toBeGreaterThan(0);
+    expect(errors.some((m) => m.includes("did not answer"))).toBe(true);
+    expect(engine.paused).toBe(true); // never left running when it finished
+  });
+
+  it("ends a crashed game loop as an error instead of hanging", async () => {
+    const engine = new FakeEngine();
+    const { api, log } = fakeApi(engine);
+    let calls = 0;
+    const original = engine.getState.bind(engine);
+    engine.getState = () => {
+      if (++calls > 6) throw new Error("wasm trapped");
+      return original();
+    };
+    const errors: string[] = [];
+    const result = await new SessionRunner(engine, api, cfg(), {
+      onError: (m) => errors.push(m),
+    }).run(canvas);
+    expect(result.outcome).toBe("error");
+    expect(log.ended.map((e) => e.outcome)).toEqual(["error"]);
+    expect(errors.some((m) => m.includes("Game loop crashed: wasm trapped"))).toBe(true);
+  });
+
+  it("leaves the game paused when the session cannot be created", async () => {
+    const engine = new FakeEngine();
+    const { api, log } = fakeApi(engine, false, true);
+    await expect(new SessionRunner(engine, api, cfg()).run(canvas)).rejects.toThrow(/503/);
+    expect(engine.paused).toBe(true);
+    expect(log.ended).toEqual([]);
   });
 });

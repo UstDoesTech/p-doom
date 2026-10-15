@@ -1,4 +1,4 @@
-import type { Api } from "./api";
+import { ApiTimeout, type Api } from "./api";
 import type { Engine } from "./engine/Engine";
 import { TIC_RATE } from "./engine/mockWorld";
 import { HumanInput } from "./human";
@@ -80,15 +80,18 @@ export class SessionRunner {
   async run(canvas: HTMLCanvasElement): Promise<RunResult> {
     const { cfg, engine, api, hooks } = this;
     const isHuman = cfg.playerType === "human";
+    const hold = () => {
+      if (engine.canPause()) engine.pause();
+    };
 
     await engine.start(canvas, { level: cfg.level, seed: cfg.seed });
-    if (cfg.mode === "paused" && !engine.canPause()) {
-      throw new Error("This engine build cannot pause, so paused mode would be recorded wrongly.");
-    }
-    // Hold the game still while the session registers, so nobody plays unattended.
-    if (engine.canPause()) engine.pause();
     let session: { session_id: string };
     try {
+      if (cfg.mode === "paused" && !engine.canPause()) {
+        throw new Error("This engine build cannot pause, so paused mode would be recorded wrongly.");
+      }
+      // Hold the game still while the session registers, so nobody plays unattended.
+      hold();
       session = await api.createSession({
         player_type: cfg.playerType,
         mode: cfg.mode,
@@ -96,9 +99,11 @@ export class SessionRunner {
         level: cfg.level,
         seed: cfg.seed,
       });
-    } finally {
-      engine.resume();
+    } catch (e) {
+      hold(); // no session, so nothing may keep playing behind the error message
+      throw e;
     }
+    engine.resume();
 
     const telemetry = new TelemetryBuffer(api, session.session_id);
     const reflex = new ReflexLayer(engine);
@@ -112,6 +117,7 @@ export class SessionRunner {
     let inFlight = false;
     let done = false;
     let lastState = engine.getState();
+    let decisionTimeouts = 0;
 
     const decide = async (state: GameState) => {
       const shot = cfg.playerType === "vision_llm" ? engine.screenshot() : null;
@@ -122,6 +128,9 @@ export class SessionRunner {
         if (decision.intent) reflex.setIntent(decision.intent);
         hooks.onDecision?.(decision, state);
       } catch (e) {
+        // The server may still log this decision. It is counted here as well so the session row
+        // shows a player that kept timing out, not only one that returned errors.
+        if (e instanceof ApiTimeout) decisionTimeouts += 1;
         hooks.onError?.(e instanceof Error ? e.message : String(e));
       } finally {
         if (cfg.mode === "paused" && !done) engine.resume();
@@ -137,6 +146,7 @@ export class SessionRunner {
       api.abandonSession(session.session_id, {
         duration_s: (lastState.tic - startTic) / TIC_RATE,
         kills: engine.kills(),
+        decision_timeouts: decisionTimeouts,
       });
     };
     globalThis.addEventListener?.("pagehide", onHide);
@@ -149,27 +159,34 @@ export class SessionRunner {
       };
       const timer = setInterval(() => {
         if (done) return;
-        const state = engine.getState();
-        const status = engine.status();
-        lastState = state;
+        try {
+          const state = engine.getState();
+          const status = engine.status();
+          lastState = state;
 
-        if (state.tic - lastSampled >= cfg.eventEveryTics) {
-          lastSampled = state.tic;
-          telemetry.push(toEvent(state, isHuman ? human.action() : reflex.current()));
-        }
-        hooks.onTick?.(state, reflex.current());
-
-        if (this.abandoned) return finish("abandoned");
-        if (this.aborted) return finish("aborted");
-        if (status !== "running") return finish(status);
-        if ((state.tic - startTic) / TIC_RATE >= cfg.timeoutS) return finish("timeout");
-
-        if (!isHuman) {
-          reflex.apply();
-          if (!inFlight && performance.now() - lastDecisionAt >= cfg.decisionIntervalMs) {
-            inFlight = true;
-            void decide(state);
+          if (state.tic - lastSampled >= cfg.eventEveryTics) {
+            lastSampled = state.tic;
+            telemetry.push(toEvent(state, isHuman ? human.action() : reflex.current()));
           }
+          hooks.onTick?.(state, reflex.current());
+
+          if (this.abandoned) return finish("abandoned");
+          if (this.aborted) return finish("aborted");
+          if (status !== "running") return finish(status);
+          if ((state.tic - startTic) / TIC_RATE >= cfg.timeoutS) return finish("timeout");
+
+          if (!isHuman) {
+            reflex.apply();
+            if (!inFlight && performance.now() - lastDecisionAt >= cfg.decisionIntervalMs) {
+              inFlight = true;
+              void decide(state);
+            }
+          }
+        } catch (e) {
+          // A throw inside a timer callback would otherwise leave this promise pending for ever
+          // and the session without an end.
+          hooks.onError?.(`Game loop crashed: ${e instanceof Error ? e.message : String(e)}`);
+          finish("error");
         }
       }, cfg.tickMs ?? 30);
     });
@@ -177,12 +194,18 @@ export class SessionRunner {
     globalThis.removeEventListener?.("pagehide", onHide);
     reflex.releaseAll();
     human.detach();
-    if (engine.canPause()) engine.pause();
+    hold();
+    let kills = 0;
+    try {
+      kills = engine.kills();
+    } catch {
+      /* a crashed engine may not answer; the row is still worth writing */
+    }
     const result: RunResult = {
       sessionId: session.session_id,
       outcome,
       durationS: (lastState.tic - startTic) / TIC_RATE,
-      kills: engine.kills(),
+      kills,
     };
 
     // The keepalive call already ended an abandoned session; the page is going away.
@@ -190,17 +213,23 @@ export class SessionRunner {
 
     await telemetry.stop();
     if (telemetry.pending > 0) hooks.onError?.(`${telemetry.pending} events were not delivered`);
-    await this.endWithRetry(session.session_id, outcome, result);
+    await this.endWithRetry(session.session_id, outcome, result, decisionTimeouts);
     return result;
   }
 
-  private async endWithRetry(sessionId: string, outcome: Outcome, r: RunResult): Promise<void> {
+  private async endWithRetry(
+    sessionId: string,
+    outcome: Outcome,
+    r: RunResult,
+    decisionTimeouts: number,
+  ): Promise<void> {
     for (let attempt = 1; ; attempt++) {
       try {
         await this.api.endSession(sessionId, {
           outcome,
           duration_s: r.durationS,
           kills: r.kills,
+          decision_timeouts: decisionTimeouts,
         });
         return;
       } catch (e) {

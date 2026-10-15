@@ -223,3 +223,24 @@ def test_registry_wires_the_new_players():
     bare = build_registry(Settings(_env_file=None), None)
     no_agent = {r["player_type"]: r for r in bare.describe()}
     assert no_agent["tool_agent"]["reason"] == "PDOOM_AGENT_ENDPOINT is not set"
+
+
+def test_tool_agent_gives_up_at_its_deadline_and_passes_a_timeout_to_every_call(monkeypatch):
+    import pdoom.players.tool_agent as ta
+
+    client = FakeClient(*[reply(call("exit_info")) for _ in range(5)])
+    seen = []
+    original = client.create
+    client.create = lambda **kw: (seen.append(kw["timeout"]), original(**kw))[1]
+    client.chat.completions.create = client.create
+    monkeypatch.setattr(ta, "DEADLINE_S", 0.0)
+    d = ToolAgent("ep", client).decide(state())
+    assert d.intent is None and "out of time" in d.error and seen == []
+
+    monkeypatch.setattr(ta, "DEADLINE_S", 20.0)
+    client2 = FakeClient(reply(call("act", {"intent": "advance"})))
+    seen.clear()
+    original2 = client2.create
+    client2.chat.completions.create = lambda **kw: (seen.append(kw["timeout"]), original2(**kw))[1]
+    assert ToolAgent("ep", client2).decide(state()).intent == Intent.advance
+    assert seen and 0 < seen[0] <= ta.CALL_TIMEOUT_S

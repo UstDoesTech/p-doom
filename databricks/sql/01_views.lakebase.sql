@@ -13,12 +13,15 @@ CREATE OR REPLACE VIEW `{catalog}`.`{schema}`.doom_sessions (
   model_version COMMENT 'Pinned model or prompt version. A change starts a new version',
   started_at COMMENT 'When the attempt started (UTC)',
   ended_at COMMENT 'When the attempt ended (UTC)',
-  outcome COMMENT 'cleared (reached the exit), died, timeout, aborted (Stop pressed) or abandoned (page closed). The last two are not attempts',
+  outcome COMMENT 'cleared (reached the exit), died, timeout, aborted (Stop pressed), abandoned (page closed or idle), error (the browser game loop crashed). Empty while the game is open, or forever if the app restarted mid-game. Only cleared, died and timeout can be attempts',
   duration_s COMMENT 'Seconds of play',
-  kills COMMENT 'Enemies killed'
+  kills COMMENT 'Enemies killed',
+  decisions COMMENT 'Decisions the server answered for this game. Empty for humans and open games',
+  decision_errors COMMENT 'Of those, how many failed (no intent). A failed decision holds the previous move',
+  decision_timeouts COMMENT 'Decision calls the browser gave up waiting for'
 )
-COMMENT 'One row per attempt at a level, for every player type. Live view of the Lakebase table'
-AS SELECT session_id, player_type, mode, engine, level, seed, model_version, started_at, ended_at, outcome, duration_s, kills
+COMMENT 'One row per game at a level, for every player type. Live view of the Lakebase table. Read doom_games for attempts'
+AS SELECT session_id, player_type, mode, engine, level, seed, model_version, started_at, ended_at, outcome, duration_s, kills, decisions, decision_errors, decision_timeouts
 FROM `{lakebase_catalog}`.`pdoom`.doom_sessions;
 
 CREATE OR REPLACE VIEW `{catalog}`.`{schema}`.doom_events (
