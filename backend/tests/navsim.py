@@ -413,8 +413,8 @@ class Level:
             if d < 1:
                 target = path[idx]
                 continue
-            free, _ = self.cast_ray(px, py, math.atan2(ty - py, tx - px), d, 0)
-            if free >= d - 0.5:
+            a = math.atan2(ty - py, tx - px)
+            if all(self.cast_ray(px - o * math.sin(a), py + o * math.cos(a), a, d, 0)[0] >= d - 0.5 for o in (0.0, -13.0, 13.0)):
                 target = path[idx]
             elif idx > 1:
                 break

@@ -543,6 +543,21 @@ static void solve_field(int keys)
     }
 }
 
+/* Is the way to a point clear for a body, not just a line? Three rays: the middle and one a little
+ * to each side, so the waypoint does not graze a corner the player would catch. */
+static int clear_for_body(const mobj_t *me, double ang, double d)
+{
+    static const double OFFSETS[3] = {0.0, -13.0, 13.0};
+    int k;
+    for (k = 0; k < 3; k++) {
+        mobj_t tmp = *me;
+        tmp.x += to_fixed(OFFSETS[k] * -sin(ang));
+        tmp.y += to_fixed(OFFSETS[k] * cos(ang));
+        if (cast_ray(&tmp, ang, d, 0, NULL) < d - 0.5) return 0;
+    }
+    return 1;
+}
+
 /* Where to walk to reach the exit: a point on the way, whether it is a door, and what remains. */
 static int find_route(const player_t *p, const mobj_t *me, int *via_door, double *remaining,
                       int *at_exit, double *wx, double *wy)
@@ -612,7 +627,7 @@ static int find_route(const player_t *p, const mobj_t *me, int *via_door, double
             target = i;
             continue;
         }
-        if (cast_ray(me, atan2(ty - py, tx - px), d, 0, NULL) >= d - 0.5)
+        if (clear_for_body(me, atan2(ty - py, tx - px), d))
             target = i;
         else if (i > 1)
             break;
