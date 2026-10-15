@@ -80,13 +80,13 @@ jobs:
       - name: App logs from the session
         if: always()
         run: |
-          logs=$(databricks apps logs "$APP_NAME" --tail-lines 400 2>&1 | grep "\[APP\]" | grep -vE "GET |POST .* 20[0-9]" | tail -30 | cut -c1-400 | tr '\n' '|')
+          logs=$(databricks apps logs "$APP_NAME" --tail-lines 1500 2>&1 | grep "\[APP\]" | grep -vE "GET |HEAD |POST .* 20[0-9]" | tail -40 | cut -c1-300 | tr '\n' '|')
           echo "::notice title=app log errors::${logs}"
       - name: Did the session reach Lakebase
         if: always()
         run: |
           set +e
-          out=$(scripts/pg.sh -At -F' | ' -c "select s.session_id, s.player_type, s.engine, s.outcome, (select count(*) from pdoom.doom_events e where e.session_id=s.session_id) as events, (select count(*) from pdoom.doom_decisions d where d.session_id=s.session_id) as decisions from pdoom.doom_sessions s order by s.started_at desc limit 3" 2>&1 | grep -v '^::add-mask')
+          out=$(scripts/pg.sh -At -F' | ' -c "select s.session_id, s.player_type, s.engine, s.outcome, (select count(*) from pdoom.doom_events e where e.session_id=s.session_id) as events, (select count(*) from pdoom.doom_decisions d where d.session_id=s.session_id) as decisions from pdoom.doom_sessions s order by s.started_at desc limit 8" 2>&1 | grep -v '^::add-mask' | tr '\n' ';')
           echo "::notice title=lakebase latest sessions::${out:-none}"
           tot=$(scripts/pg.sh -At -c "select (select count(*) from pdoom.doom_sessions)||' sessions, '||(select count(*) from pdoom.doom_events)||' events, '||(select count(*) from pdoom.doom_decisions)||' decisions'" 2>&1 | grep -v '^::add-mask')
           echo "::notice title=lakebase totals::${tot}"
@@ -95,7 +95,7 @@ jobs:
         if: always()
         run: |
           set +e
-          out=$(scripts/pg.sh -At -F' | ' -c "select s.player_type, s.engine, coalesce(s.outcome,'(open)'), s.decisions, s.decision_errors, s.decision_timeouts, (select string_agg(distinct coalesce(d.raw_output->>'transport', d.raw_output->>'routed_to', '-'), ',') from pdoom.doom_decisions d where d.session_id=s.session_id) as paths, (select left(max(d.error),80) from pdoom.doom_decisions d where d.session_id=s.session_id) as last_error from pdoom.doom_sessions s order by s.started_at desc limit 8" 2>&1 | grep -v '^::add-mask')
+          out=$(scripts/pg.sh -At -F' | ' -c "select s.player_type, s.engine, coalesce(s.outcome,'(open)'), s.decisions, s.decision_errors, s.decision_timeouts, (select string_agg(distinct coalesce(d.raw_output->>'transport', d.raw_output->>'routed_to', '-'), ',') from pdoom.doom_decisions d where d.session_id=s.session_id) as paths, (select left(max(d.error),80) from pdoom.doom_decisions d where d.session_id=s.session_id) as last_error from pdoom.doom_sessions s order by s.started_at desc limit 8" 2>&1 | grep -v '^::add-mask' | tr '\n' ';')
           echo "::notice title=session health (player, engine, outcome, decisions, errors, timeouts, paths, error)::${out:-none}"
       - name: The views see the new columns and exclusions
         if: always()
