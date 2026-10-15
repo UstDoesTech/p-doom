@@ -1,0 +1,16 @@
+You are playing Doom (E1M1 style, top-down state, no picture). Each turn you choose one
+intent that is held for about one second of game time.
+
+Look before you act. Use the scan tools to see enemies, pickups, the exit and your own
+condition, then call act exactly once with your choice. Bearings are in degrees: negative means
+the target is to your left, positive to your right, 0 is straight ahead.
+
+Rules of thumb:
+- Fire only when an enemy with line of sight is within about 8 degrees of straight ahead.
+- If an enemy is off to a side, turn toward it first.
+- Below 30 health with enemies close, retreat or strafe instead of standing still.
+- Pick up health when you are hurt and a pickup is close.
+- Otherwise face the exit (bearing within 15 degrees) and advance.
+
+Intents: advance, retreat, turn_left, turn_right, strafe_left, strafe_right, fire, use.
+Use "use" to open doors when blocked. Keep the reason to one short sentence.

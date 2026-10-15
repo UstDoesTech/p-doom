@@ -69,7 +69,7 @@ def test_full_rule_bot_session_lands_in_the_sink():
 def test_unavailable_players_say_why():
     client, _ = make()
     assert start(client, "ai_decide").status_code == 503
-    assert start(client, "tool_agent").status_code == 501
+    assert start(client, "tool_agent").status_code == 503
     assert start(client, "human").status_code == 201
 
 
