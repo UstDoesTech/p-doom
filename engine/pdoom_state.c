@@ -547,7 +547,7 @@ static void solve_field(int keys)
  * to each side, so the waypoint does not graze a corner the player would catch. */
 static int clear_for_body(const mobj_t *me, double ang, double d)
 {
-    static const double OFFSETS[3] = {0.0, -13.0, 13.0};
+    static const double OFFSETS[3] = {0.0, -16.0, 16.0};
     int k;
     for (k = 0; k < 3; k++) {
         mobj_t tmp = *me;

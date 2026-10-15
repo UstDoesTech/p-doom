@@ -414,7 +414,7 @@ class Level:
                 target = path[idx]
                 continue
             a = math.atan2(ty - py, tx - px)
-            if all(self.cast_ray(px - o * math.sin(a), py + o * math.cos(a), a, d, 0)[0] >= d - 0.5 for o in (0.0, -13.0, 13.0)):
+            if all(self.cast_ray(px - o * math.sin(a), py + o * math.cos(a), a, d, 0)[0] >= d - 0.5 for o in (0.0, -16.0, 16.0)):
                 target = path[idx]
             elif idx > 1:
                 break
