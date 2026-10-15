@@ -23,6 +23,12 @@ variables:
   lakebase_database:
     description: Lakebase database resource path
     default: projects/pdoom/branches/production/databases/pdoom
+  agent_endpoint:
+    description: Tool-calling chat endpoint for the tool_agent player
+    default: databricks-meta-llama-3-3-70b-instruct
+  vision_endpoint:
+    description: Multimodal chat endpoint for the vision_llm player
+    default: databricks-llama-4-maverick
   app_source:
     description: Directory built by scripts/build_app.sh
     default: ../app-dist
@@ -65,6 +71,14 @@ resources:
           sql_warehouse:
             id: ${var.warehouse_id}
             permission: CAN_USE
+        - name: agent-endpoint
+          serving_endpoint:
+            name: ${var.agent_endpoint}
+            permission: CAN_QUERY
+        - name: vision-endpoint
+          serving_endpoint:
+            name: ${var.vision_endpoint}
+            permission: CAN_QUERY
         - name: postgres
           postgres:
             branch: ${var.lakebase_branch}
