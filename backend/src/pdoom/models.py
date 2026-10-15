@@ -123,7 +123,7 @@ class Route(BaseModel):
     bearing: float
     distance: float
     via: str
-    hops: int = 0
+    remaining: float = 0.0
 
 
 class GameState(BaseModel):
@@ -147,6 +147,10 @@ class Decision(BaseModel):
     """What a player returns. intent is None when the player failed, so the caller holds."""
 
     intent: Intent | None = None
+    # Game tics to hold the intent before letting go. None holds it until the next decision. A
+    # turn that is held for a second overshoots by a long way, so players that know how far they
+    # need to turn say so.
+    hold_tics: int | None = Field(default=None, ge=1, le=70)
     confidence: float | None = None
     threat_prob: float | None = None
     danger_score: float | None = None
@@ -178,6 +182,7 @@ class DecideRequest(BaseModel):
 
 class DecideResponse(BaseModel):
     intent: Intent | None
+    hold_tics: int | None = None
     confidence: float | None = None
     threat_prob: float | None = None
     danger_score: float | None = None

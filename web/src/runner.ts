@@ -126,7 +126,10 @@ export class SessionRunner {
       try {
         const decision = await api.decide(session.session_id, state, shot);
         if (done) return;
-        if (decision.intent) reflex.setIntent(decision.intent);
+        if (decision.intent) {
+          const hold = decision.hold_tics;
+          reflex.setIntent(decision.intent, hold ? engine.getState().tic + hold : null);
+        }
         hooks.onDecision?.(decision, state);
       } catch (e) {
         // The server may still log this decision. It is counted here as well so the session row
@@ -178,7 +181,7 @@ export class SessionRunner {
             return finish("timeout");
 
           if (!isHuman) {
-            reflex.apply();
+            reflex.apply(state.tic);
             if (!inFlight && performance.now() - lastDecisionAt >= cfg.decisionIntervalMs) {
               inFlight = true;
               void decide(state);

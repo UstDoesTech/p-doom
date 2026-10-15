@@ -80,7 +80,7 @@ export interface Route {
   bearing: number;
   distance: number;
   via: string;
-  hops: number;
+  remaining: number;
 }
 
 export interface GameState {
@@ -113,6 +113,8 @@ export type GameKey =
 
 export interface Decision {
   intent: Intent | null;
+  /** Game tics to hold the intent before letting go; null holds it until the next decision. */
+  hold_tics?: number | null;
   confidence: number | null;
   threat_prob: number | null;
   danger_score: number | null;

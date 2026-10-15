@@ -42,6 +42,8 @@
 #define MAX_LISTED 16
 #define OUT_SIZE 16384
 #define MAX_SECTORS 1024
+#define MAX_LINES 2048
+#define INF_COST 1e30
 #define MAX_INTERACT 6
 #define RAY_MAX 512.0
 #define PLAYER_HEIGHT (56 * FRACUNIT)
@@ -338,95 +340,287 @@ static const double WALL_BEARINGS[8] = {0, 45, 90, 135, 180, -135, -90, -45};
 static const char *WALL_NAMES[8] = {"ahead",  "ahead_right", "right",      "behind_right",
                                     "behind", "behind_left", "left",       "ahead_left"};
 
-static double sector_cx(const sector_t *s) { return (double)s->soundorg.x / 65536.0; }
-static double sector_cy(const sector_t *s) { return (double)s->soundorg.y / 65536.0; }
+/* ---- the route ----------------------------------------------------------------------------
+ *
+ * The map is laid over a grid of 32-unit cells. A cell is walkable if no wall, closed window or
+ * high step is within a player's radius of its centre. A step between neighbouring cells is allowed
+ * unless it crosses something that blocks walking; crossing a door costs extra and needs the key
+ * for a key door. A cheapest-path field is solved outwards from the exit switch for the keys held
+ * (and cached until they change), and the player follows it downhill to the furthest cell it can
+ * see in a straight line, stopping at the first door. Unlike a graph of sectors this does not flip
+ * between two openings into the same room, and it finds a way round pits and pillars.
+ */
 
-static int can_cross(const player_t *p, const sector_t *from, const sector_t *to, const line_t *l)
+#define CELL 32.0
+#define MAX_CELLS 200000
+#define WALK_RADIUS 16.0
+
+static int g_w = 0, g_h = 0, g_ok = 0, g_lines = 0, g_field_keys = -1;
+static double g_ox = 0.0, g_oy = 0.0;
+static unsigned char g_walk[MAX_CELLS];
+static unsigned char g_edge[MAX_CELLS][8]; /* 255 blocked, 0 free, 4 door, 5..7 key door (4 + key) */
+static int g_dist[MAX_CELLS];
+static int g_queue[MAX_CELLS + 1];
+static unsigned char g_inq[MAX_CELLS];
+static const int DX[8] = {1, 1, 0, -1, -1, -1, 0, 1};
+static const int DY[8] = {0, 1, 1, 1, 0, -1, -1, -1};
+
+static double lx1(const line_t *l) { return (double)l->v1->x / 65536.0; }
+static double ly1(const line_t *l) { return (double)l->v1->y / 65536.0; }
+static double lx2(const line_t *l) { return (double)l->v2->x / 65536.0; }
+static double ly2(const line_t *l) { return (double)l->v2->y / 65536.0; }
+static double hypot2(double ax, double ay, double bx, double by) { return sqrt((ax - bx) * (ax - bx) + (ay - by) * (ay - by)); }
+static int is_exit_line(const line_t *l) { return l->special == 11 || l->special == 51 || l->special == 52 || l->special == 124; }
+
+static double seg_distance(double px, double py, const line_t *l, double *cx, double *cy)
 {
-    if (is_door(l->special)) return has_key(p, door_key(l->special));
-    if (l->flags & ML_BLOCKING) return 0;
-    if (min_fixed(from->ceilingheight, to->ceilingheight) -
-            max_fixed(from->floorheight, to->floorheight) < PLAYER_HEIGHT)
-        return 0;
-    return to->floorheight - from->floorheight <= STEP_HEIGHT;
+    double x1 = lx1(l), y1 = ly1(l), ex = lx2(l) - x1, ey = ly2(l) - y1;
+    double len2 = ex * ex + ey * ey, u = 0.0;
+    if (len2 > 0.0) u = ((px - x1) * ex + (py - y1) * ey) / len2;
+    if (u < 0.0) u = 0.0;
+    if (u > 1.0) u = 1.0;
+    *cx = x1 + u * ex;
+    *cy = y1 + u * ey;
+    return hypot2(px, py, *cx, *cy);
 }
 
-static double sdist[MAX_SECTORS];
-static int sprev[MAX_SECTORS];
-static const line_t *svia[MAX_SECTORS];
-static char sdone[MAX_SECTORS];
-static char sgoal[MAX_SECTORS];
+static fixed_t to_fixed(double v) { return (fixed_t)(v * 65536.0); }
+static const sector_t *sector_at(double x, double y) { return R_PointInSubsector(to_fixed(x), to_fixed(y))->sector; }
+static double cell_x(int ix) { return g_ox + (ix + 0.5) * CELL; }
+static double cell_y(int iy) { return g_oy + (iy + 0.5) * CELL; }
 
-/* Cheapest way from the player's sector to a sector that touches an exit line, going through
- * doors the player can open. Fills the first step's line and the number of sector hops. */
-static int find_route(const player_t *p, const mobj_t *me, const line_t **first, int *hops,
-                      int *at_exit)
+static int cell_walkable(double x, double y)
 {
-    int i, start, goals = 0;
-    const sector_t *here = R_PointInSubsector(me->x, me->y)->sector;
-    if (numsectors > MAX_SECTORS || numsectors <= 0) return 0;
-    start = (int)(here - sectors);
-    memset(sgoal, 0, (size_t)numsectors);
+    double z = (double)sector_at(x, y)->floorheight / 65536.0;
+    int i;
     for (i = 0; i < numlines; i++) {
         const line_t *l = &lines[i];
-        if ((l->special == 11 || l->special == 51 || l->special == 52 || l->special == 124) &&
-            l->frontsector != NULL) {
-            sgoal[l->frontsector - sectors] = 1;
-            goals++;
+        double cx, cy, hi;
+        if (fmin(lx1(l), lx2(l)) > x + WALK_RADIUS || fmax(lx1(l), lx2(l)) < x - WALK_RADIUS ||
+            fmin(ly1(l), ly2(l)) > y + WALK_RADIUS || fmax(ly1(l), ly2(l)) < y - WALK_RADIUS)
+            continue;
+        if (seg_distance(x, y, l, &cx, &cy) >= WALK_RADIUS) continue;
+        if (l->backsector == NULL || (l->flags & ML_BLOCKING)) return 0;
+        if (is_door(l->special)) continue;
+        if (!gap_open(l)) return 0;
+        hi = (double)max_fixed(l->frontsector->floorheight, l->backsector->floorheight) / 65536.0;
+        if (hi - z > 24.0) return 0;
+    }
+    return 1;
+}
+
+/* 255 if the step between two cell centres is blocked, else the kind of door it crosses (0 none). */
+static int edge_kind(double ax, double ay, double bx, double by)
+{
+    double d1x = bx - ax, d1y = by - ay;
+    int i, need = 0;
+    for (i = 0; i < numlines; i++) {
+        const line_t *l = &lines[i];
+        double ex = lx2(l) - lx1(l), ey = ly2(l) - ly1(l), denom, t, u;
+        if (fmin(lx1(l), lx2(l)) > fmax(ax, bx) || fmax(lx1(l), lx2(l)) < fmin(ax, bx) ||
+            fmin(ly1(l), ly2(l)) > fmax(ay, by) || fmax(ly1(l), ly2(l)) < fmin(ay, by))
+            continue;
+        denom = d1x * ey - d1y * ex;
+        if (fabs(denom) < 1e-9) continue;
+        t = ((lx1(l) - ax) * ey - (ly1(l) - ay) * ex) / denom;
+        u = ((lx1(l) - ax) * d1y - (ly1(l) - ay) * d1x) / denom;
+        if (t < 0.0 || t > 1.0 || u < 0.0 || u > 1.0) continue;
+        if (l->backsector == NULL || (l->flags & ML_BLOCKING)) return 255;
+        if (is_door(l->special)) {
+            int k = 4 + door_key(l->special);
+            if (k > need) need = k;
+            continue;
+        }
+        if (!gap_open(l)) return 255;
+        {
+            int side = P_PointOnLineSide(to_fixed(ax), to_fixed(ay), (line_t *)l);
+            const sector_t *near_s = side == 0 ? l->frontsector : l->backsector;
+            const sector_t *far_s = side == 0 ? l->backsector : l->frontsector;
+            if (far_s->floorheight - near_s->floorheight > STEP_HEIGHT) return 255;
         }
     }
-    if (goals == 0) return 0;
-    if (sgoal[start]) {
+    return need;
+}
+
+static int build_grid(void)
+{
+    double minx = 1e30, miny = 1e30, maxx = -1e30, maxy = -1e30;
+    int i, ix, iy, d;
+    if (numlines <= 0) return 0;
+    for (i = 0; i < numlines; i++) {
+        minx = fmin(minx, fmin(lx1(&lines[i]), lx2(&lines[i])));
+        maxx = fmax(maxx, fmax(lx1(&lines[i]), lx2(&lines[i])));
+        miny = fmin(miny, fmin(ly1(&lines[i]), ly2(&lines[i])));
+        maxy = fmax(maxy, fmax(ly1(&lines[i]), ly2(&lines[i])));
+    }
+    g_ox = minx - CELL;
+    g_oy = miny - CELL;
+    g_w = (int)((maxx - g_ox) / CELL) + 2;
+    g_h = (int)((maxy - g_oy) / CELL) + 2;
+    if ((long)g_w * g_h > MAX_CELLS) return 0;
+    for (ix = 0; ix < g_w; ix++)
+        for (iy = 0; iy < g_h; iy++) g_walk[iy * g_w + ix] = (unsigned char)cell_walkable(cell_x(ix), cell_y(iy));
+    for (ix = 0; ix < g_w; ix++)
+        for (iy = 0; iy < g_h; iy++) {
+            int c = iy * g_w + ix;
+            for (d = 0; d < 8; d++) {
+                int jx = ix + DX[d], jy = iy + DY[d];
+                g_edge[c][d] = 255;
+                if (!g_walk[c] || jx < 0 || jy < 0 || jx >= g_w || jy >= g_h || !g_walk[jy * g_w + jx]) continue;
+                if (DX[d] && DY[d] && !(g_walk[iy * g_w + jx] && g_walk[jy * g_w + ix])) continue;
+                g_edge[c][d] = (unsigned char)edge_kind(cell_x(ix), cell_y(iy), cell_x(jx), cell_y(jy));
+            }
+        }
+    return 1;
+}
+
+static int keys_mask(const player_t *p)
+{
+    return (has_key(p, 1) ? 1 : 0) | (has_key(p, 2) ? 2 : 0) | (has_key(p, 3) ? 4 : 0);
+}
+
+static int edge_open(int kind, int keys)
+{
+    if (kind == 255) return 0;
+    if (kind >= 5 && !(keys & (1 << (kind - 5)))) return 0;
+    return 1;
+}
+
+static void solve_field(int keys)
+{
+    int n = g_w * g_h, i, head = 0, tail = 0;
+    for (i = 0; i < n; i++) {
+        g_dist[i] = 1 << 28;
+        g_inq[i] = 0;
+    }
+    for (i = 0; i < numlines; i++) {
+        const line_t *e = &lines[i];
+        double mx, my;
+        int ix, iy;
+        if (!is_exit_line(e) || e->frontsector == NULL) continue;
+        mx = (lx1(e) + lx2(e)) / 2.0;
+        my = (ly1(e) + ly2(e)) / 2.0;
+        for (ix = (int)((mx - 400.0 - g_ox) / CELL); ix <= (int)((mx + 400.0 - g_ox) / CELL); ix++)
+            for (iy = (int)((my - 400.0 - g_oy) / CELL); iy <= (int)((my + 400.0 - g_oy) / CELL); iy++) {
+                double x, y, cx, cy;
+                int c;
+                if (ix < 0 || iy < 0 || ix >= g_w || iy >= g_h) continue;
+                c = iy * g_w + ix;
+                if (!g_walk[c]) continue;
+                x = cell_x(ix);
+                y = cell_y(iy);
+                if (seg_distance(x, y, e, &cx, &cy) <= 40.0 &&
+                    P_PointOnLineSide(to_fixed(x), to_fixed(y), (line_t *)e) == 0 && !g_inq[c]) {
+                    g_dist[c] = 0;
+                    g_inq[c] = 1;
+                    g_queue[tail++] = c;
+                    if (tail > MAX_CELLS) tail = 0;
+                }
+            }
+    }
+    while (head != tail) {
+        int c = g_queue[head++], ix, iy, d;
+        if (head > MAX_CELLS) head = 0;
+        g_inq[c] = 0;
+        ix = c % g_w;
+        iy = c / g_w;
+        for (d = 0; d < 8; d++) {
+            int jx = ix + DX[d], jy = iy + DY[d], j, kind, nd;
+            if (jx < 0 || jy < 0 || jx >= g_w || jy >= g_h) continue;
+            j = jy * g_w + jx;
+            kind = g_edge[j][(d + 4) % 8]; /* the step from j back to c */
+            if (!edge_open(kind, keys)) continue;
+            nd = g_dist[c] + (DX[d] && DY[d] ? 45 : 32) + (kind >= 4 && kind != 255 ? 64 : 0);
+            if (nd < g_dist[j]) {
+                g_dist[j] = nd;
+                if (!g_inq[j]) {
+                    g_inq[j] = 1;
+                    g_queue[tail++] = j;
+                    if (tail > MAX_CELLS) tail = 0;
+                }
+            }
+        }
+    }
+}
+
+/* Where to walk to reach the exit: a point on the way, whether it is a door, and what remains. */
+static int find_route(const player_t *p, const mobj_t *me, int *via_door, double *remaining,
+                      int *at_exit, double *wx, double *wy)
+{
+    double px = (double)me->x / 65536.0, py = (double)me->y / 65536.0;
+    int keys = keys_mask(p), ix, iy, dx, dy, i, best_c = -1, door_at = -1, plen = 1, target, limit;
+    int path[26];
+    double best_cost = 1e30;
+
+    if (g_ok == 0 || g_lines != numlines) {
+        g_ok = build_grid() ? 1 : 2; /* 2: too big or empty, do not try again this level */
+        g_lines = numlines;
+        g_field_keys = -1;
+    }
+    if (g_ok != 1) return 0;
+    if (g_field_keys != keys) {
+        solve_field(keys);
+        g_field_keys = keys;
+    }
+    ix = (int)((px - g_ox) / CELL);
+    iy = (int)((py - g_oy) / CELL);
+    for (dx = -1; dx <= 1; dx++)
+        for (dy = -1; dy <= 1; dy++) {
+            int jx = ix + dx, jy = iy + dy, c;
+            double cost;
+            if (jx < 0 || jy < 0 || jx >= g_w || jy >= g_h) continue;
+            c = jy * g_w + jx;
+            if (g_dist[c] >= (1 << 27)) continue;
+            cost = g_dist[c] + hypot2(cell_x(jx), cell_y(jy), px, py);
+            if (cost < best_cost) {
+                best_cost = cost;
+                best_c = c;
+            }
+        }
+    if (best_c < 0) return 0;
+    *remaining = best_cost;
+    *via_door = 0;
+    *at_exit = 0;
+    if (g_dist[best_c] == 0) {
         *at_exit = 1;
-        *first = NULL;
-        *hops = 0;
         return 1;
     }
-    for (i = 0; i < numsectors; i++) {
-        sdist[i] = 1e30;
-        sprev[i] = -1;
-        svia[i] = NULL;
-        sdone[i] = 0;
-    }
-    sdist[start] = 0.0;
-    for (;;) {
-        int u = -1, k;
-        const sector_t *s;
-        for (i = 0; i < numsectors; i++)
-            if (!sdone[i] && sdist[i] < 1e29 && (u < 0 || sdist[i] < sdist[u])) u = i;
-        if (u < 0) return 0;
-        if (sgoal[u]) {
-            int step = u, n = 0;
-            while (sprev[step] >= 0) {
-                *first = svia[step];
-                step = sprev[step];
-                n++;
-            }
-            *hops = n;
-            *at_exit = 0;
-            return 1;
-        }
-        sdone[u] = 1;
-        s = &sectors[u];
-        for (k = 0; k < s->linecount; k++) {
-            const line_t *l = s->lines[k];
-            const sector_t *o;
-            int v;
-            double cost;
-            if (l->backsector == NULL || l->frontsector == l->backsector) continue;
-            o = (l->frontsector == s) ? l->backsector : l->frontsector;
-            v = (int)(o - sectors);
-            if (sdone[v] || !can_cross(p, s, o, l)) continue;
-            cost = sqrt((sector_cx(s) - sector_cx(o)) * (sector_cx(s) - sector_cx(o)) +
-                        (sector_cy(s) - sector_cy(o)) * (sector_cy(s) - sector_cy(o))) + 16.0;
-            if (is_door(l->special)) cost += 64.0;
-            if (sdist[u] + cost < sdist[v]) {
-                sdist[v] = sdist[u] + cost;
-                sprev[v] = u;
-                svia[v] = l;
+    path[0] = best_c;
+    for (i = 0; i < 24; i++) {
+        int c = path[plen - 1], d, nxt = -1, nkind = 0, cix = c % g_w, ciy = c / g_w;
+        for (d = 0; d < 8; d++) {
+            int jx = cix + DX[d], jy = ciy + DY[d], j;
+            if (jx < 0 || jy < 0 || jx >= g_w || jy >= g_h) continue;
+            j = jy * g_w + jx;
+            if (!edge_open(g_edge[c][d], keys)) continue;
+            if (g_dist[j] < g_dist[c] && (nxt < 0 || g_dist[j] < g_dist[nxt])) {
+                nxt = j;
+                nkind = g_edge[c][d];
             }
         }
+        if (nxt < 0) break;
+        if (nkind >= 4 && nkind != 255 && door_at < 0) door_at = plen;
+        path[plen++] = nxt;
+        if (door_at >= 0 || g_dist[nxt] == 0) break;
     }
+    target = 0;
+    limit = door_at >= 0 ? door_at : plen - 1;
+    for (i = 0; i <= limit; i++) {
+        double tx = cell_x(path[i] % g_w), ty = cell_y(path[i] / g_w);
+        double d = hypot2(tx, ty, px, py);
+        if (d < 1.0) {
+            target = i;
+            continue;
+        }
+        if (cast_ray(me, atan2(ty - py, tx - px), d, 0, NULL) >= d - 0.5)
+            target = i;
+        else if (i > 1)
+            break;
+    }
+    *wx = cell_x(path[target] % g_w);
+    *wy = cell_y(path[target] / g_w);
+    *via_door = door_at >= 0 && target == door_at;
+    return 1;
 }
 
 /* Appends the scenery fields to the JSON in out. Returns the new length. */
@@ -434,8 +628,9 @@ static int write_scenery(const player_t *p, const mobj_t *me, int n)
 {
     near_line_t near_lines[MAX_INTERACT];
     int nn = 0, i, j, any_key = 0;
-    const line_t *hit = NULL, *first = NULL;
-    int hops = 0, at_exit = 0;
+    const line_t *hit = NULL;
+    int via_door = 0, at_exit = 0;
+    double remaining = 0.0, wx = 0.0, wy = 0.0;
     double face_rad = (double)me->angle * 2.0 * M_PI / 4294967296.0;
 
     n += snprintf(out + n, OUT_SIZE - n, ",\"walls\":{");
@@ -498,29 +693,20 @@ static int write_scenery(const player_t *p, const mobj_t *me, int n)
         n += snprintf(out + n, OUT_SIZE - n, ",\"use_target\":null");
     }
 
-    if (find_route(p, me, &first, &hops, &at_exit)) {
-        double b, d;
+    if (find_route(p, me, &via_door, &remaining, &at_exit, &wx, &wy)) {
+        double b = 0.0, d = 0.0;
         const char *via = "portal";
-        if (at_exit || first == NULL) {
-            double eb = 0.0, ed = 0.0;
-            if (exit_bearing(me, &eb, &ed)) {
-                b = eb;
-                d = ed;
-            } else {
-                b = 0.0;
-                d = 0.0;
-            }
+        if (at_exit) {
+            exit_bearing(me, &b, &d);
             via = "exit";
         } else {
-            double mx = ((double)first->v1->x + (double)first->v2->x) / 2.0 / 65536.0;
-            double my = ((double)first->v1->y + (double)first->v2->y) / 2.0 / 65536.0;
-            b = bearing_to(me, mx, my);
-            d = dist_to(me, mx, my);
-            if (is_door(first->special)) via = "door";
+            b = bearing_to(me, wx, wy);
+            d = dist_to(me, wx, wy);
+            if (via_door) via = "door";
         }
         n += snprintf(out + n, OUT_SIZE - n,
-                      ",\"route\":{\"bearing\":%.2f,\"distance\":%.1f,\"via\":\"%s\",\"hops\":%d}",
-                      b, d, via, hops);
+                      ",\"route\":{\"bearing\":%.2f,\"distance\":%.1f,\"via\":\"%s\",\"remaining\":%.0f}",
+                      b, d, via, remaining);
     } else {
         n += snprintf(out + n, OUT_SIZE - n, ",\"route\":null");
     }
@@ -616,6 +802,7 @@ EMSCRIPTEN_KEEPALIVE
 void pdoom_new_game(int episode, int map, int seed)
 {
     pending_seed = seed;
+    g_ok = 0;
     paused = false;
     G_DeferedInitNew(sk_medium, episode, map);
 }

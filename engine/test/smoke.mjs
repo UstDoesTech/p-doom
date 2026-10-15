@@ -87,7 +87,7 @@ try {
   check("some_wall_is_close", !!s0.walls && W.some((k) => s0.walls[k] < 300), s0.walls);
   check(
     "has_route",
-    !!s0.route && Math.abs(s0.route.bearing) <= 180 && s0.route.distance > 0 && s0.route.hops > 0,
+    !!s0.route && Math.abs(s0.route.bearing) <= 180 && s0.route.distance > 0 && s0.route.remaining > 0,
     s0.route,
   );
   check("use_target_is_null_at_start", s0.use_target === null, s0.use_target);
@@ -177,7 +177,7 @@ try {
   };
   const LEFT = { key: "ArrowLeft", code: "ArrowLeft", keyCode: 37 };
   const SPACE = { key: " ", code: "Space", keyCode: 32 };
-  let best = n0.route ? n0.route.hops : 99, bestDist = n0.exit_distance, usedDoor = 0, usedExit = 0;
+  let best = n0.route ? n0.route.remaining : 1e9, bestDist = n0.exit_distance, usedDoor = 0, usedExit = 0;
   let last = n0, outcome = "running", sinceUse = 99;
   const navUntil = Date.now() + 100000;
   while (Date.now() < navUntil) {
@@ -187,7 +187,7 @@ try {
       outcome = s.status;
       break;
     }
-    if (s.route) best = Math.min(best, s.route.hops);
+    if (s.route) best = Math.min(best, s.route.remaining);
     if (s.exit_distance != null) bestDist = Math.min(bestDist, s.exit_distance);
     const b = s.route ? s.route.bearing : s.exit_bearing ?? 0;
     const wallAhead = s.walls ? s.walls.ahead : 999;
@@ -207,8 +207,9 @@ try {
     await sleep(250);
   }
   for (const k of [LEFT, RIGHT, UP, SPACE]) await hold(k, false);
-  report.checks.nav = { outcome, hops_start: n0.route?.hops, hops_best: best, exit_dist_start: Math.round(n0.exit_distance), exit_dist_best: Math.round(bestDist), usedDoor, usedExit, tic: last.tic, health: last.player.health };
-  check("route_makes_progress", best < (n0.route?.hops ?? 99), [n0.route?.hops, best]);
+  report.checks.nav = { outcome, remaining_start: n0.route?.remaining, remaining_best: best, exit_dist_start: Math.round(n0.exit_distance), exit_dist_best: Math.round(bestDist), usedDoor, usedExit, tic: last.tic, health: last.player.health };
+  // A naive driver may jam on a wall, so only ask that the remaining route length shrinks at all.
+  check("route_makes_progress", n0.route != null && best < n0.route.remaining - 50, [n0.route?.remaining, best]);
 
   check("no_page_errors", report.errors.length === 0, report.errors.length);
 } catch (e) {

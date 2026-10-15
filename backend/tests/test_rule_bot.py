@@ -112,7 +112,7 @@ def test_stuck_walking_forward_tries_use_then_slides_then_turns():
 
 def test_moving_clears_the_stuck_counter():
     bot = RuleBot()
-    out = play(bot, state(tic=1), state(tic=36), state(tic=71, x=60), state(tic=106, x=120))
+    out = play(bot, state(tic=1), state(tic=36), state(tic=71, x=300), state(tic=106, x=600))
     assert out == [Intent.advance, Intent.use, Intent.advance, Intent.advance]
 
 
@@ -129,8 +129,8 @@ def test_dodges_when_hit_by_a_close_visible_enemy():
 
 def test_looks_around_when_hit_by_something_unseen():
     bot = RuleBot()
-    out = play(bot, state(health=100, tic=1), state(health=80, tic=36, x=50),
-               state(health=60, tic=71, x=50), state(health=40, tic=106, x=50))
+    out = play(bot, state(health=100, tic=1), state(health=80, tic=36, x=300),
+               state(health=60, tic=71, x=600), state(health=40, tic=106, x=900))
     assert out[1] in (Intent.turn_left, Intent.turn_right)
     assert out[2] in (Intent.turn_left, Intent.turn_right)
     assert out[2] != out[1]

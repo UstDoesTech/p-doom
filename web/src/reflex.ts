@@ -19,19 +19,26 @@ export const INTENT_KEYS: Record<Intent, GameKey[]> = {
  */
 export class ReflexLayer {
   private intent: Intent | null = null;
+  private until: number | null = null;
   private down = new Set<GameKey>();
 
   constructor(private engine: Pick<Engine, "setKey">) {}
 
-  setIntent(intent: Intent | null): void {
+  /** `untilTic` lets go of the keys at that game tic. Without it the intent is held until the next one. */
+  setIntent(intent: Intent | null, untilTic?: number | null): void {
     this.intent = intent;
+    this.until = intent && untilTic != null ? untilTic : null;
   }
 
   current(): Intent | null {
     return this.intent;
   }
 
-  apply(): void {
+  apply(tic?: number): void {
+    if (tic !== undefined && this.until !== null && tic >= this.until) {
+      this.intent = null;
+      this.until = null;
+    }
     const want = new Set<GameKey>(this.intent ? INTENT_KEYS[this.intent] : []);
     for (const key of this.down) if (!want.has(key)) this.engine.setKey(key, false);
     for (const key of want) if (!this.down.has(key)) this.engine.setKey(key, true);
@@ -40,6 +47,7 @@ export class ReflexLayer {
 
   releaseAll(): void {
     this.intent = null;
+    this.until = null;
     this.apply();
   }
 }

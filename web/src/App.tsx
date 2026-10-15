@@ -16,6 +16,9 @@ import {
   type PlayerType,
 } from "./types";
 
+/** Players that answer in milliseconds, so they can decide several times a second and steer. */
+const LOCAL_PLAYERS: PlayerType[] = ["rule_bot"];
+
 interface Hud {
   health: number;
   tic: number;
@@ -44,7 +47,8 @@ export default function App() {
   const [roster, setRoster] = useState<PlayerType[]>(["rule_bot"]);
   const [setNote, setSetNote] = useState("");
   const stopSet = useRef(false);
-  const [intervalMs, setIntervalMs] = useState(1000);
+  // null until the user types one: a local player is cheap to ask, so it decides more often.
+  const [gapOverride, setGapOverride] = useState<number | null>(null);
   const [timeoutS, setTimeoutS] = useState(0);
 
   const [running, setRunning] = useState(false);
@@ -72,6 +76,8 @@ export default function App() {
     if (wasmAvailable === false && engineKind === "wasm") setEngineKind("mock");
   }, [wasmAvailable, engineKind]);
 
+  const gapFor = (pt: PlayerType) => gapOverride ?? (LOCAL_PLAYERS.includes(pt) ? 250 : 1000);
+
   const availability = (pt: PlayerType) => players.find((p) => p.player_type === pt);
 
   /** One game. Returns null when it could not start, with the reason shown on the page. */
@@ -92,7 +98,7 @@ export default function App() {
         engine: engineKind,
         level,
         seed: sd,
-        decisionIntervalMs: intervalMs,
+        decisionIntervalMs: gapFor(pt),
         eventEveryTics: 5,
         timeoutS,
       },
@@ -222,9 +228,9 @@ export default function App() {
           Decision gap (ms)
           <input
             type="number"
-            value={intervalMs}
+            value={gapOverride ?? gapFor(playerType)}
             disabled={running}
-            onChange={(e) => setIntervalMs(Number(e.target.value))}
+            onChange={(e) => setGapOverride(Number(e.target.value))}
           />
         </label>
         <label>
