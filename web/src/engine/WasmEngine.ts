@@ -65,6 +65,9 @@ export class WasmEngine implements Engine {
     booted ??= this.boot(canvas, episode, map);
     this.mod = await booted;
     this.last = undefined;
+    // The previous run leaves the engine paused. A paused engine never loads the new level, so
+    // the wait below would run out. The runner pauses it again once the session is registered.
+    this.mod.ccall("pdoom_resume", null, [], []);
     this.mod.ccall("pdoom_new_game", null, ["number", "number", "number"], [episode, map, opts.seed]);
     await this.waitForPlayer();
   }
