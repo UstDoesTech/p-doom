@@ -18,8 +18,8 @@ on:
       app_name:
         default: pdoom
   push:
-    branches: [feat/databricks-app, feat/lakebase-sink, feat/rulebot-lakebase-only, fix/telemetry-gaps]
-    paths: [.github/workflows/app.yml, scripts/**, databricks/**, web/**, backend/**]
+    branches: [feat/databricks-app, feat/lakebase-sink, feat/rulebot-lakebase-only, fix/telemetry-gaps, feat/scenery-aware-bots]
+    paths: [.github/workflows/app.yml, scripts/**, databricks/**, web/**, backend/**, engine/**]
 
 permissions:
   contents: read
