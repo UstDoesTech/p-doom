@@ -1,0 +1,61 @@
+# Deploys the Genie space with its own bundle (databricks/genie), then asks it a question.
+name: genie
+on:
+  workflow_dispatch:
+  push:
+    branches: [fix/telemetry-gaps, main]
+    paths:
+      - .github/workflows/genie.yml
+      - databricks/genie/**
+      - scripts/build_genie_space.py
+permissions:
+  contents: read
+env:
+  DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+  DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
+  DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: databricks/genie
+    steps:
+      - uses: actions/checkout@v4
+      - uses: databricks/setup-cli@main
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: The space file matches instructions.md
+        working-directory: .
+        run: python scripts/build_genie_space.py --check
+      - name: Validate
+        run: |
+          set +e
+          echo "::notice title=cli::$(databricks --version)"
+          databricks workspace mkdirs /Workspace/Shared/p-doom
+          out=$(databricks bundle validate 2>&1); code=$?
+          echo "::notice title=validate exit=${code}::$(printf '%s' "$out" | tail -c 1500 | tr '\n' '|')"
+          exit $code
+      - name: Deploy
+        run: |
+          set +e
+          out=$(databricks bundle deploy 2>&1); code=$?
+          echo "::notice title=deploy exit=${code}::$(printf '%s' "$out" | tail -c 1500 | tr '\n' '|')"
+          exit $code
+      - name: Ask the space a question
+        run: |
+          set +e
+          id=$(databricks bundle summary -o json | jq -r '.resources.genie_spaces.pdoom_genie.id // empty')
+          echo "::notice title=space id::${id:-none}"
+          [ -n "$id" ] || exit 1
+          start=$(databricks api post "/api/2.0/genie/spaces/$id/start-conversation" --json '{"content":"What is p(doom) for each player type?"}')
+          cid=$(echo "$start" | jq -r '.conversation_id // empty'); mid=$(echo "$start" | jq -r '.message_id // empty')
+          [ -n "$cid" ] || { echo "::error title=start-conversation::$(echo "$start" | head -c 400)"; exit 1; }
+          for i in $(seq 1 30); do
+            msg=$(databricks api get "/api/2.0/genie/spaces/$id/conversations/$cid/messages/$mid")
+            st=$(echo "$msg" | jq -r .status)
+            case "$st" in COMPLETED|FAILED|CANCELLED) break;; esac
+            sleep 5
+          done
+          echo "::notice title=genie answer status=${st}::$(echo "$msg" | jq -c '{status, error: .error, sql: [.attachments[]?.query.query], text: [.attachments[]?.text.content]}' | head -c 1500)"
+          [ "$st" = COMPLETED ]

@@ -14,11 +14,14 @@ CREATE TABLE IF NOT EXISTS `{catalog}`.`{schema}`.doom_sessions (
   model_version STRING COMMENT 'Pinned model or prompt version. A change starts a new version',
   started_at TIMESTAMP COMMENT 'When the attempt started (UTC)',
   ended_at TIMESTAMP COMMENT 'When the attempt ended (UTC)',
-  outcome STRING COMMENT 'cleared (reached the exit), died, timeout, aborted (Stop pressed) or abandoned (page closed). The last two are not attempts',
+  outcome STRING COMMENT 'cleared (reached the exit), died, timeout, aborted (Stop pressed), abandoned (page closed or idle), error (the browser game loop crashed). Empty while the game is open, or forever if the app restarted mid-game. Only cleared, died and timeout can be attempts',
   duration_s DOUBLE COMMENT 'Seconds of play',
-  kills INT COMMENT 'Enemies killed'
+  kills INT COMMENT 'Enemies killed',
+  decisions INT COMMENT 'Decisions the server answered for this game. Empty for humans and open games',
+  decision_errors INT COMMENT 'Of those, how many failed (no intent). A failed decision holds the previous move',
+  decision_timeouts INT COMMENT 'Decision calls the browser gave up waiting for'
 )
-COMMENT 'One row per attempt at a level, for every player type';
+COMMENT 'One row per game at a level, for every player type. Read doom_games for attempts';
 
 CREATE TABLE IF NOT EXISTS `{catalog}`.`{schema}`.doom_events (
   session_id STRING COMMENT 'Joins to doom_sessions.session_id',

@@ -1,8 +1,12 @@
 // Loads the deployed app in full Chromium, plays one short Doom session as rule_bot and prints one
-// JSON line. Usage: node verify_app.mjs <app url> <bearer token>
+// JSON line. Usage:
+//   node verify_app.mjs <app url> <bearer token> [player] [engine] [time cap, game s] [stop after ms]
+// Defaults: rule_bot on the Doom WASM engine with a 15 s cap, played to the end. With a stop time,
+// the Stop button is pressed after that many milliseconds.
 import { chromium } from "playwright";
 
-const [url, token] = process.argv.slice(2);
+const [url, token, player = "rule_bot", engine = "wasm", cap = "15", stopAfter = ""] =
+  process.argv.slice(2);
 const report = { console: [], pageErrors: [], failedRequests: [] };
 const browser = await chromium.launch({ channel: "chromium", args: ["--enable-unsafe-swiftshader"] });
 const timer = setTimeout(() => {
@@ -34,16 +38,31 @@ try {
   await page.waitForSelector("select", { timeout: 30000 });
   await page.waitForTimeout(3000);
   const wasmOption = await page.locator("select").nth(2).locator("option[value=wasm]");
-  report.wasmDisabled = await wasmOption.isDisabled();
+  report.wasmDisabled = engine === "wasm" ? await wasmOption.isDisabled() : false;
+  report.player = player;
+  report.engine = engine;
   if (!report.wasmDisabled) {
-    await page.locator("select").nth(0).selectOption("rule_bot");
+    await page.locator("select").nth(0).selectOption(player);
     await page.locator("select").nth(1).selectOption("paused");
-    await page.locator("select").nth(2).selectOption("wasm");
-    await page.locator("input[type=number]").nth(2).fill("15");
+    await page.locator("select").nth(2).selectOption(engine);
+    await page.locator("input[type=number]").nth(2).fill(cap);
     await page.getByRole("button", { name: "Start" }).click();
+    if (stopAfter) {
+      await page.waitForTimeout(Number(stopAfter));
+      await page.getByRole("button", { name: "Stop" }).click();
+    }
+    // Done when a result shows, or an error shows and the game is no longer running. An error
+    // message alone can appear mid-game (a slow decision, say).
+    await page.waitForFunction(
+      () =>
+        document.querySelector(".result") ||
+        (document.querySelector(".error") && !document.querySelector("button.stop")),
+      null,
+      { timeout: 200000 },
+    );
     const done = page.locator(".result, .error").first();
-    await done.waitFor({ timeout: 200000 });
     report.result = (await done.innerText()).slice(0, 300);
+    report.error = await page.locator(".error").innerText().catch(() => "");
     report.hud = await page.locator("dl").first().innerText().catch(() => "");
     report.log = await page.locator(".log").innerText().catch(() => "");
   }

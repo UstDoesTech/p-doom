@@ -50,8 +50,15 @@ class SqlRunner:
     def table(self, name: str) -> str:
         return ".".join(quote_ident(p) for p in (self.catalog, self.schema, name))
 
-    def run(self, statement: str, params: dict[str, str] | None = None) -> list[list[str | None]]:
-        """Execute one statement and return its rows as lists of strings."""
+    def run(
+        self,
+        statement: str,
+        params: dict[str, str] | None = None,
+        max_wait_s: float | None = None,
+    ) -> list[list[str | None]]:
+        """Execute one statement and return its rows as lists of strings. max_wait_s overrides
+        the runner's own limit for this call."""
+        wait = max_wait_s if max_wait_s is not None else self.max_wait_s
         from databricks.sdk.service.sql import StatementParameterListItem, StatementState
 
         items = [
@@ -63,9 +70,9 @@ class SqlRunner:
             warehouse_id=self.warehouse_id,
             statement=statement,
             parameters=items,
-            wait_timeout="30s",
+            wait_timeout=f"{int(min(30, max(5, wait)))}s",
         )
-        deadline = time.monotonic() + self.max_wait_s
+        deadline = time.monotonic() + wait
         while resp.status and resp.status.state in (StatementState.PENDING, StatementState.RUNNING):
             if time.monotonic() > deadline:
                 api.cancel_execution(resp.statement_id)

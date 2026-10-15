@@ -26,6 +26,8 @@ EXCLUDE_FROM_STATE = {"tic": True, "seed": True}
 API_PATH = "/api/2.0/ai-functions/ai-decide"
 BREAKER_FAILURES = 3  # consecutive transport failures before the REST path is skipped
 BREAKER_PAUSE_S = 60.0
+REST_TIMEOUT_S = 8.0  # one REST attempt, including retries
+SQL_TIMEOUT_S = 15.0
 
 log = logging.getLogger(__name__)
 
@@ -84,8 +86,15 @@ class AiDecideApi:
     def client(self) -> Any:
         if self._client is None:
             from databricks.sdk import WorkspaceClient
+            from databricks.sdk.core import Config
 
-            self._client = WorkspaceClient()
+            # The SDK retries transient errors for up to five minutes by default. A game cannot
+            # wait that long for one move.
+            self._client = WorkspaceClient(
+                config=Config(
+                    http_timeout_seconds=REST_TIMEOUT_S, retry_timeout_seconds=int(REST_TIMEOUT_S)
+                )
+            )
         return self._client
 
     def run(self, state: GameState) -> dict[str, Any]:
@@ -157,7 +166,7 @@ class AiDecidePlayer:
 
     def _decide_sql(self, state: GameState) -> Decision:
         payload = state.model_dump_json(exclude=EXCLUDE_FROM_STATE)
-        rows = self.sql.run(self.statement, {"state": payload})
+        rows = self.sql.run(self.statement, {"state": payload}, max_wait_s=SQL_TIMEOUT_S)
         if not rows or not rows[0] or rows[0][0] is None:
             return Decision(error="ai_decide returned no rows")
         return parse_decision(rows[0][0])

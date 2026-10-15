@@ -45,7 +45,8 @@ class Outcome(StrEnum):
     died = "died"
     timeout = "timeout"
     aborted = "aborted"  # the player pressed Stop
-    abandoned = "abandoned"  # the page closed mid-game
+    abandoned = "abandoned"  # the page closed mid-game, or the session went idle
+    error = "error"  # the game loop crashed in the browser
 
 
 Engine = Literal["wasm", "mock"]
@@ -159,6 +160,8 @@ class EndRequest(BaseModel):
     outcome: Outcome
     duration_s: float = Field(ge=0)
     kills: int = Field(default=0, ge=0)
+    # Decision calls the browser gave up on. The server never sees these as failures.
+    decision_timeouts: int = Field(default=0, ge=0, le=1_000_000)
 
 
 # ---- telemetry rows (one model per Delta table) -----------------------------------------
@@ -173,10 +176,14 @@ class SessionRow(BaseModel):
     seed: int
     model_version: str
     started_at: datetime
-    ended_at: datetime
-    outcome: str
-    duration_s: float
-    kills: int
+    # None while the game is open. A row that stays open was lost to a restart.
+    ended_at: datetime | None = None
+    outcome: str | None = None
+    duration_s: float | None = None
+    kills: int | None = None
+    decisions: int | None = None
+    decision_errors: int | None = None
+    decision_timeouts: int | None = None
 
 
 class EventRow(BaseModel):

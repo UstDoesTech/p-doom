@@ -35,8 +35,9 @@ class FakeSql(SqlRunner):
         self.reply = reply
         self.calls: list[tuple[str, dict]] = []
 
-    def run(self, statement, params=None):
+    def run(self, statement, params=None, max_wait_s=None):
         self.calls.append((statement, params or {}))
+        self.max_wait_s_seen = max_wait_s
         return self.reply
 
 
@@ -185,3 +186,9 @@ def test_needs_at_least_one_transport():
 
     with pytest.raises(ValueError):
         AiDecidePlayer()
+
+
+def test_the_sql_backup_is_given_a_time_limit():
+    sql = FakeSql([[json.dumps(GOOD)]])
+    AiDecidePlayer(sql).decide(game_state())
+    assert sql.max_wait_s_seen == 15.0

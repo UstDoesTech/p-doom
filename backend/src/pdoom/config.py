@@ -40,7 +40,8 @@ class Settings(BaseSettings):
     static_dir: str = ""
     cors_origins: list[str] = ["http://localhost:5173"]
 
-    session_ttl_s: int = 3600
+    session_ttl_s: int = 900  # idle this long and the session is recorded as abandoned
+    sweep_interval_s: int = 60
 
 
 @lru_cache

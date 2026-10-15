@@ -1,0 +1,33 @@
+# Deploys the p(doom) Genie space. It is a bundle of its own because the Genie resource needs the
+# direct deployment engine, and the app bundle one level up deploys with the default engine.
+# The space reads the views that `python -m pdoom.setup_db` creates, so deploy it after the app.
+# pdoom.geniespace.json is built by scripts/build_genie_space.py from instructions.md.
+bundle:
+  name: p-doom-genie
+  engine: direct
+
+variables:
+  warehouse_id:
+    description: SQL warehouse the space runs queries on
+    default: 4f084f656bc73157
+  parent_path:
+    description: Workspace folder that holds the space (not a Git folder)
+    default: /Workspace/Shared/p-doom
+
+targets:
+  dev:
+    default: true
+
+resources:
+  genie_spaces:
+    pdoom_genie:
+      title: p(doom)
+      description: Ask how often Doom players die, who is best, and which games did not count
+      warehouse_id: ${var.warehouse_id}
+      parent_path: ${var.parent_path}
+      file_path: ./pdoom.geniespace.json
+      permissions:
+        - level: CAN_MANAGE
+          group_name: admins
+        - level: CAN_EDIT
+          group_name: users

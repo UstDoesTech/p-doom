@@ -2,6 +2,8 @@ from fastapi.testclient import TestClient
 
 from pdoom.config import Settings
 from pdoom.main import create_app
+from pdoom.models import PlayerType
+from pdoom.players import build_registry
 from pdoom.telemetry import MemorySink
 
 STATE = {
@@ -32,7 +34,9 @@ def start(client, player_type="rule_bot", **extra):
 
 def test_health_and_player_list():
     client, _ = make()
-    assert client.get("/api/health").json()["databricks_configured"] is False
+    health = client.get("/api/health").json()
+    assert health["status"] == "ok" and health["warehouse_configured"] is False
+    assert health["ai_decide_transports"] == ["rest"] and health["sink_reachable"] is None
     players = {p["player_type"]: p for p in client.get("/api/players").json()}
     assert players["rule_bot"]["available"] is True
     assert players["ai_decide"]["available"] is True  # REST needs no warehouse
@@ -137,3 +141,102 @@ def test_stopped_and_abandoned_games_write_a_session_row():
         )
         assert ended.status_code == 200
         assert [r.outcome for r in sink.sessions] == [outcome]
+
+
+class OpenSink(MemorySink):
+    """Like the Lakebase sink: the session row is written at the start and again at the end."""
+
+    def __init__(self):
+        super().__init__()
+        self.by_id = {}
+        self.reachable = True
+
+    def write_open_session(self, rows):
+        self.write_sessions(rows)
+
+    def write_sessions(self, rows):
+        for r in rows:
+            self.by_id[r.session_id] = r
+        super().write_sessions(rows)
+
+    def ping(self):
+        if not self.reachable:
+            raise RuntimeError("down")
+        return True
+
+
+def test_a_game_writes_an_open_row_at_the_start_and_a_full_row_at_the_end():
+    client, sink = make(OpenSink())
+    sid = start(client).json()["session_id"]
+    opened = sink.by_id[sid]
+    assert opened.outcome is None and opened.ended_at is None and opened.decisions is None
+    for tic in (10, 20, 30):
+        client.post(f"/api/sessions/{sid}/decide", json={"state": {**STATE, "tic": tic}})
+    client.post(
+        f"/api/sessions/{sid}/end",
+        json={"outcome": "died", "duration_s": 5, "kills": 0, "decision_timeouts": 2},
+    )
+    done = sink.by_id[sid]
+    assert (done.outcome, done.decisions, done.decision_errors, done.decision_timeouts) == (
+        "died", 3, 0, 2,
+    )
+
+
+def test_failed_decisions_are_counted_on_the_session_row():
+    class Broken:
+        player_type = PlayerType.rule_bot
+
+        def decide(self, state, screenshot_b64=None):
+            raise RuntimeError("boom")
+
+    reg = build_registry(Settings(_env_file=None), None)
+    reg.register(Broken())
+    sink = MemorySink()
+    client = TestClient(create_app(Settings(_env_file=None, sink="memory"), sink=sink, players=reg))
+    sid = start(client).json()["session_id"]
+    client.post(f"/api/sessions/{sid}/decide", json={"state": STATE})
+    client.post(f"/api/sessions/{sid}/end", json={"outcome": "died", "duration_s": 1})
+    row = sink.sessions[-1]
+    assert (row.decisions, row.decision_errors) == (1, 1)
+
+
+def test_a_retried_end_is_answered_not_rejected():
+    client, sink = make()
+    sid = start(client).json()["session_id"]
+    body = {"outcome": "cleared", "duration_s": 9, "kills": 1}
+    first = client.post(f"/api/sessions/{sid}/end", json=body)
+    again = client.post(f"/api/sessions/{sid}/end", json=body)
+    assert first.status_code == again.status_code == 200
+    assert again.json()["already_ended"] == "true" and again.json()["outcome"] == "cleared"
+    assert len(sink.sessions) == 1  # not written twice
+    assert client.post("/api/sessions/never-existed/end", json=body).status_code == 404
+
+
+def test_idle_sessions_are_swept_into_abandoned_rows():
+    sink = OpenSink()
+    app = create_app(Settings(_env_file=None, sink="memory", session_ttl_s=0), sink=sink)
+    client = TestClient(app)
+    sid = start(client).json()["session_id"]
+    client.post(f"/api/sessions/{sid}/decide", json={"state": STATE})
+    assert app.state.sweep() == 1
+    row = sink.by_id[sid]
+    assert row.outcome == "abandoned" and row.decisions == 1 and row.ended_at is not None
+    assert len(sink.decisions) == 1  # pending decisions were flushed
+    assert app.state.sweep() == 0
+    late = client.post(f"/api/sessions/{sid}/end", json={"outcome": "died", "duration_s": 1})
+    assert late.json()["outcome"] == "abandoned"  # does not rewrite the row
+
+
+def test_health_reports_an_unreachable_sink_as_degraded():
+    sink = OpenSink()
+    sink.reachable = False
+    client, _ = make(sink)
+    health = client.get("/api/health").json()
+    assert health["status"] == "degraded" and health["sink_reachable"] is False
+
+
+def test_error_outcome_is_accepted():
+    client, sink = make()
+    sid = start(client).json()["session_id"]
+    ended = client.post(f"/api/sessions/{sid}/end", json={"outcome": "error", "duration_s": 1})
+    assert ended.status_code == 200 and sink.sessions[0].outcome == "error"

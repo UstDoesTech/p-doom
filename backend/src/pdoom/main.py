@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -81,7 +83,35 @@ def create_app(
     players = players or build_registry(settings, sql)
     store = SessionStore(settings.model_version, settings.session_ttl_s)
 
-    app = FastAPI(title="p(doom)", version=__version__)
+    def sweep() -> int:
+        """Record sessions nobody has touched for session_ttl_s as abandoned."""
+        stale = store.pop_stale()
+        for session in stale:
+            try:
+                _flush(session, sink)
+                sink.write_sessions([_row(session, "abandoned", _idle_seconds(session), 0, 0)])
+            except Exception:  # noqa: BLE001 - retried never; the open row still marks the game
+                log.exception("Could not record abandoned session %s", session.id)
+        return len(stale)
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        stop = threading.Event()
+
+        def loop() -> None:
+            while not stop.wait(settings.sweep_interval_s):
+                try:
+                    sweep()
+                except Exception:  # noqa: BLE001
+                    log.exception("Session sweep failed")
+
+        thread = threading.Thread(target=loop, name="session-sweep", daemon=True)
+        thread.start()
+        yield
+        stop.set()
+
+    app = FastAPI(title="p(doom)", version=__version__, lifespan=lifespan)
+    app.state.sweep = sweep
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
@@ -96,14 +126,36 @@ def create_app(
         except KeyError:
             raise HTTPException(404, "Unknown or finished session") from None
 
+    health_cache: dict[str, object] = {"at": 0.0, "ok": None}
+
+    def sink_reachable() -> bool | None:
+        """True or False for a sink that can be pinged (Lakebase), None for the rest. Cached for
+        30 s so a health probe does not open a database connection every time."""
+        ping = getattr(sink, "ping", None)
+        if ping is None:
+            return None
+        if time.monotonic() - float(health_cache["at"]) > 30:
+            try:
+                health_cache["ok"] = bool(ping())
+            except Exception:  # noqa: BLE001
+                log.warning("Sink ping failed", exc_info=True)
+                health_cache["ok"] = False
+            health_cache["at"] = time.monotonic()
+        return health_cache["ok"]  # type: ignore[return-value]
+
     @api.get("/health")
     def health() -> dict[str, object]:
+        reachable = sink_reachable()
         return {
-            "status": "ok",
+            "status": "ok" if reachable is not False else "degraded",
             "version": __version__,
             "sink": settings.sink,
-            "databricks_configured": sql is not None,
-            "lakebase": settings.sink in ("lakebase", "both"),
+            "sink_reachable": reachable,
+            "warehouse_configured": sql is not None,
+            "ai_decide_transports": [
+                t for t, on in (("rest", settings.ai_decide_api), ("sql", sql is not None)) if on
+            ],
+            "open_sessions": len(store),
             "model_version": settings.model_version,
         }
 
@@ -119,6 +171,12 @@ def create_app(
             except PlayerUnavailable as exc:
                 raise HTTPException(exc.status_code, exc.reason) from None
         session = store.create(body)
+        open_row = getattr(sink, "write_open_session", None)
+        if open_row is not None:
+            try:
+                open_row([_row(session, None, None, None, 0)])
+            except Exception:  # noqa: BLE001 - the end call writes the full row regardless
+                log.warning("Could not write the open session row", exc_info=True)
         return SessionCreated(session_id=session.id, model_version=session.model_version)
 
     @api.post("/sessions/{session_id}/decide", response_model=DecideResponse)
@@ -136,6 +194,7 @@ def create_app(
             log.exception("Player %s failed", session.player_type)
             decision = Decision(error=f"{type(exc).__name__}: {exc}"[:500])
         decision.latency_ms = int((time.perf_counter() - started) * 1000)
+        session.count_decision(failed=decision.intent is None or decision.error is not None)
 
         row = DecisionRow(
             session_id=session.id,
@@ -167,30 +226,23 @@ def create_app(
 
     @api.post("/sessions/{session_id}/end")
     def end(session_id: str, body: EndRequest) -> dict[str, str]:
-        session = session_or_404(session_id)
+        try:
+            session = store.get(session_id)
+        except KeyError:
+            # A retried end whose first reply was lost: the row is already written.
+            earlier = store.ended_outcome(session_id)
+            if earlier is None:
+                raise HTTPException(404, "Unknown or finished session") from None
+            return {"session_id": session_id, "outcome": earlier, "already_ended": "true"}
         _flush(session, sink)
-        ended = datetime.now(UTC)
-        row = SessionRow(
-            session_id=session.id,
-            player_type=session.player_type.value,
-            mode=session.mode.value,
-            engine=session.engine,
-            level=session.level,
-            seed=session.seed,
-            model_version=session.model_version,
-            started_at=session.started_at,
-            ended_at=ended,
-            outcome=body.outcome.value,
-            duration_s=body.duration_s,
-            kills=body.kills,
-        )
+        row = _row(session, body.outcome.value, body.duration_s, body.kills, body.decision_timeouts)
         try:
             sink.write_sessions([row])
         except Exception as exc:
             log.exception("Writing session row failed")
             raise HTTPException(502, f"Telemetry write failed: {exc}") from None
-        store.remove(session.id)
-        return {"session_id": session.id, "outcome": row.outcome}
+        store.remove(session.id, outcome=row.outcome)
+        return {"session_id": session.id, "outcome": str(row.outcome)}
 
     app.include_router(api)
 
@@ -198,6 +250,34 @@ def create_app(
     if static and static.is_dir():
         app.mount("/", StaticFiles(directory=static, html=True), name="web")
     return app
+
+
+def _row(
+    session, outcome: str | None, duration_s: float | None, kills: int | None, timeouts: int
+) -> SessionRow:
+    """The session row. With no outcome it is the open row written when the game starts."""
+    closed = outcome is not None
+    return SessionRow(
+        session_id=session.id,
+        player_type=session.player_type.value,
+        mode=session.mode.value,
+        engine=session.engine,
+        level=session.level,
+        seed=session.seed,
+        model_version=session.model_version,
+        started_at=session.started_at,
+        ended_at=datetime.now(UTC) if closed else None,
+        outcome=outcome,
+        duration_s=duration_s,
+        kills=kills,
+        decisions=session.decisions if closed else None,
+        decision_errors=session.decision_errors if closed else None,
+        decision_timeouts=timeouts if closed else None,
+    )
+
+
+def _idle_seconds(session) -> float:
+    return max(0.0, (session.last_seen_at - session.started_at).total_seconds())
 
 
 def _json_text(value: object) -> str | None:

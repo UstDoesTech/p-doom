@@ -34,6 +34,9 @@ COLUMNS: dict[str, list[tuple[str, str, str | None]]] = {
         ("outcome", "string", None),
         ("duration_s", "double", None),
         ("kills", "int", None),
+        ("decisions", "int", None),
+        ("decision_errors", "int", None),
+        ("decision_timeouts", "int", None),
     ],
     "doom_events": [
         ("session_id", "string", None),

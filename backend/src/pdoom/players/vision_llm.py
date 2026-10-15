@@ -13,6 +13,7 @@ from typing import Any
 
 from ..models import Decision, GameState, Intent, PlayerType
 
+CALL_TIMEOUT_S = 15.0
 _JSON = re.compile(r"\{.*\}", re.DOTALL)
 
 
@@ -57,6 +58,7 @@ class VisionPlayer:
             model=self.endpoint,
             temperature=0,
             max_tokens=120,
+            timeout=CALL_TIMEOUT_S,
             messages=[
                 {"role": "system", "content": self._system},
                 {

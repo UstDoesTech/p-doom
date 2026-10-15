@@ -28,6 +28,10 @@ command: ["python", "-m", "uvicorn", "pdoom.main:create_app", "--factory", "--ho
 env:
   - name: PDOOM_WAREHOUSE_ID
     valueFrom: sql-warehouse
+  - name: PDOOM_AGENT_ENDPOINT
+    valueFrom: agent-endpoint
+  - name: PDOOM_VISION_ENDPOINT
+    valueFrom: vision-endpoint
   - name: PDOOM_SINK
     value: "${SINK:-lakebase}"
   - name: PDOOM_LAKEBASE_ENDPOINT

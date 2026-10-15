@@ -16,4 +16,10 @@ Databricks
 
 - Modes: `paused` waits for every decision. `realtime` holds the last intent while the model thinks.
 - The session store lives in memory, so run exactly one replica.
-- Telemetry sinks: memory, jsonl, sql. Zerobus is a possible future sink; it is not built.
+- Telemetry sinks: memory, jsonl, sql, lakebase (the primary one; Unity Catalog reads it through the
+  foreign catalog `pdoom_lakebase`). Zerobus is a possible future sink; it is not built.
+- A session row is written as open (no outcome) when the game starts and upserted when it ends.
+  An end call is idempotent. Sessions idle for 15 minutes are swept to `abandoned`; the page's
+  `pagehide` sends a keepalive end as `abandoned`; a crashed loop ends as `error`.
+- `/api/health` reports `ok` or `degraded` from a cached Lakebase ping, plus open session count.
+- The page can run a set (roster x seed range) one game after another; there is no headless runner.

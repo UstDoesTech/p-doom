@@ -65,6 +65,14 @@ jobs:
           out=$(timeout 290 node verify_app.mjs "$(cat $RUNNER_TEMP/url)" "$(cat $RUNNER_TEMP/tok)" 2>&1)
           code=$?
           echo "::notice title=browser session exit=${code}::$(printf '%s' "$out" | tail -c 3500 | tr '\n' ' ')"
+      - name: Play the other players and a stopped game (mock arena)
+        run: |
+          cd "$RUNNER_TEMP/v"
+          set +e
+          for spec in "ai_decide mock 6" "tool_agent mock 6" "supervisor mock 6" "vision_llm mock 6" "rule_bot mock 60 3000"; do
+            out=$(timeout 240 node verify_app.mjs "$(cat $RUNNER_TEMP/url)" "$(cat $RUNNER_TEMP/tok)" $spec 2>&1)
+            echo "::notice title=session $spec exit=$?::$(printf '%s' "$out" | tail -c 900 | tr '\n' ' ')"
+          done
       - name: Did the session reach Databricks
         run: |
           q=$(databricks api post /api/2.0/sql/statements --json "$(jq -nc --arg w "$WAREHOUSE" --arg s "SELECT player_type, engine, outcome, started_at FROM $CATALOG.$SCHEMA.doom_sessions ORDER BY started_at DESC LIMIT 5" '{warehouse_id:$w,wait_timeout:"50s",statement:$s}')" | jq -c '{state:.status.state, err:.status.error.message, rows:.result.data_array}')
@@ -72,13 +80,27 @@ jobs:
       - name: App logs from the session
         if: always()
         run: |
-          logs=$(databricks apps logs "$APP_NAME" --tail-lines 400 2>&1 | grep "\[APP\]" | grep -vE "GET |POST .* 20[0-9]" | tail -30 | cut -c1-400 | tr '\n' '|')
+          logs=$(databricks apps logs "$APP_NAME" --tail-lines 1500 2>&1 | grep "\[APP\]" | grep -vE "GET |HEAD |POST .* 20[0-9]" | tail -40 | cut -c1-300 | tr '\n' '|')
           echo "::notice title=app log errors::${logs}"
       - name: Did the session reach Lakebase
         if: always()
         run: |
           set +e
-          out=$(scripts/pg.sh -At -F' | ' -c "select s.session_id, s.player_type, s.engine, s.outcome, (select count(*) from pdoom.doom_events e where e.session_id=s.session_id) as events, (select count(*) from pdoom.doom_decisions d where d.session_id=s.session_id) as decisions from pdoom.doom_sessions s order by s.started_at desc limit 3" 2>&1 | grep -v '^::add-mask')
+          out=$(scripts/pg.sh -At -F' | ' -c "select s.session_id, s.player_type, s.engine, s.outcome, (select count(*) from pdoom.doom_events e where e.session_id=s.session_id) as events, (select count(*) from pdoom.doom_decisions d where d.session_id=s.session_id) as decisions from pdoom.doom_sessions s order by s.started_at desc limit 8" 2>&1 | grep -v '^::add-mask' | tr '\n' ';')
           echo "::notice title=lakebase latest sessions::${out:-none}"
           tot=$(scripts/pg.sh -At -c "select (select count(*) from pdoom.doom_sessions)||' sessions, '||(select count(*) from pdoom.doom_events)||' events, '||(select count(*) from pdoom.doom_decisions)||' decisions'" 2>&1 | grep -v '^::add-mask')
           echo "::notice title=lakebase totals::${tot}"
+
+      - name: Decision health and transports per player
+        if: always()
+        run: |
+          set +e
+          out=$(scripts/pg.sh -At -F' | ' -c "select s.player_type, s.engine, coalesce(s.outcome,'(open)'), s.decisions, s.decision_errors, s.decision_timeouts, (select string_agg(distinct coalesce(d.raw_output->>'transport', d.raw_output->>'routed_to', '-'), ',') from pdoom.doom_decisions d where d.session_id=s.session_id) as paths, (select left(max(d.error),80) from pdoom.doom_decisions d where d.session_id=s.session_id) as last_error from pdoom.doom_sessions s order by s.started_at desc limit 8" 2>&1 | grep -v '^::add-mask' | tr '\n' ';')
+          echo "::notice title=session health (player, engine, outcome, decisions, errors, timeouts, paths, error)::${out:-none}"
+      - name: The views see the new columns and exclusions
+        if: always()
+        run: |
+          q() { databricks api post /api/2.0/sql/statements --json "$(jq -nc --arg w "$WAREHOUSE" --arg s "$1" '{warehouse_id:$w,wait_timeout:"50s",statement:$s}')" | jq -c '{state:.status.state, err:.status.error.message, rows:.result.data_array}' | cut -c1-1200; }
+          echo "::notice title=doom_games::$(q "SELECT player_type, engine, status, counts_as_attempt, decisions, decision_errors, decision_timeouts FROM $CATALOG.$SCHEMA.doom_games ORDER BY started_at DESC LIMIT 8")"
+          echo "::notice title=leaderboard::$(q "SELECT player_type, engine, attempts, deaths, excluded_games FROM $CATALOG.$SCHEMA.doom_leaderboard ORDER BY engine, player_type")"
+          echo "::notice title=metric view::$(q "SELECT player_type, MEASURE(attempts), MEASURE(games_started), MEASURE(aborted), MEASURE(abandoned), MEASURE(lost), MEASURE(unreliable) FROM $CATALOG.$SCHEMA.doom_metrics WHERE engine = 'mock' GROUP BY player_type")"
