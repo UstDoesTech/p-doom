@@ -26,7 +26,8 @@ With `PDOOM_SINK=jsonl` nothing needs Databricks. For Databricks: set the `DATAB
 |---|---|
 | Backend, rule bot, telemetry sinks, API | Unit tested |
 | Web app, mock arena, reflex layer, runner | Unit tested, builds |
-| `ai_decide` player, SQL telemetry, setup script | Run against the workspace from CI: tables, views, metric view, a rule_bot session landing in `doom_sessions` |
+| `ai_decide` player | REST primary (about 1 s per call from CI), SQL backup (about 11 s); both run against the workspace from CI. Not yet played through a full Doom session |
+| SQL telemetry, setup script | Run against the workspace from CI: tables, views, metric view, a rule_bot session landing in `doom_sessions` |
 | Vision player | Written, never run against an endpoint |
 | Doom WASM engine | Builds in CI (Emscripten 3.1.10) and passes a headless-Chromium check: live E1M1 state, keyboard, firing, pause/resume, seed restart |
 | Databricks App | `app.yml` builds engine + web + backend, deploys with the bundle, then plays a rule_bot session on real Doom in a browser against the deployed app and checks the row in Unity Catalog. Not yet in the container image |
