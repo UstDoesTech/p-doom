@@ -103,7 +103,7 @@ def test_stuck_walking_forward_tries_use_then_slides_then_turns():
         Intent.use,           # advanced, did not move: a door?
         Intent.strafe_left,
         Intent.strafe_right,
-        Intent.use,
+        Intent.retreat,       # back out of a corner
         Intent.turn_left,
         Intent.turn_right,
         Intent.use,

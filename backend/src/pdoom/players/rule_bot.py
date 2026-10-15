@@ -339,8 +339,10 @@ class RuleBot:
                 return Intent.advance, rule, walk_hold(room)
             return Intent.advance, rule, None
         step = (mem.stuck - 1) % 6
-        if step in (0, 3):
+        if step == 0:
             return Intent.use, "stuck_use", None
+        if step == 3:
+            return Intent.retreat, "stuck_back_off", 8  # back out of a corner, then try again
         if step == 1:
             return Intent.strafe_left, "stuck_slide_left", 6
         if step == 2:

@@ -573,12 +573,17 @@ static void solve_field(int keys)
  * to each side, so the waypoint does not graze a corner the player would catch. */
 static int clear_for_body(const mobj_t *me, double ang, double d)
 {
-    static const double OFFSETS[3] = {0.0, -16.0, 16.0};
+    /* Doom's player is a 32-unit square, so across a diagonal it is wider than 32. */
+    double half = 16.0 * (fabs(cos(ang)) + fabs(sin(ang))) + 1.0;
+    double offsets[3];
     int k;
+    offsets[0] = 0.0;
+    offsets[1] = -half;
+    offsets[2] = half;
     for (k = 0; k < 3; k++) {
         mobj_t tmp = *me;
-        tmp.x += to_fixed(OFFSETS[k] * -sin(ang));
-        tmp.y += to_fixed(OFFSETS[k] * cos(ang));
+        tmp.x += to_fixed(offsets[k] * -sin(ang));
+        tmp.y += to_fixed(offsets[k] * cos(ang));
         if (cast_ray(&tmp, ang, d, 0, NULL) < d - 0.5) return 0;
     }
     return 1;
