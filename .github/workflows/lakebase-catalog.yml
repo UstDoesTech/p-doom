@@ -1,0 +1,46 @@
+# Registers the Lakebase database in Unity Catalog so SQL warehouses and Genie can read it live.
+name: lakebase-catalog
+on:
+  workflow_dispatch:
+  push:
+    branches: [feat/genie-on-lakebase]
+    paths: [.github/workflows/lakebase-catalog.yml]
+permissions:
+  contents: read
+env:
+  DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+  DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
+  DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: databricks/setup-cli@main
+      - run: |
+          echo "::notice title=postgres commands::$(databricks postgres -h 2>&1 | grep -E '^  [a-z]' | awk '{print $1}' | paste -sd, - | cut -c1-1500)"
+          echo "::notice title=catalog-ish::$(databricks -h 2>&1 | grep -iE 'database|postgres|lakebase' | tr '\n' '|' | cut -c1-800)"
+          for c in create-catalog; do echo "::notice title=postgres $c help::$(databricks postgres $c -h 2>&1 | tr '\n' '|' | cut -c1-1500)"; done
+  register:
+    needs: discover
+    runs-on: ubuntu-latest
+    env:
+      CATALOG: pdoom_lakebase
+      WAREHOUSE: 4f084f656bc73157
+    steps:
+      - uses: databricks/setup-cli@main
+      - name: Register the database as a catalog
+        run: |
+          set +e
+          if databricks postgres get-catalog "catalogs/$CATALOG" -o json >/dev/null 2>&1; then
+            echo "::notice title=catalog::already registered"; exit 0
+          fi
+          out=$(databricks postgres create-catalog "$CATALOG" --json '{"spec":{"postgres_database":"pdoom","branch":"projects/pdoom/branches/production"}}' -o json 2>&1)
+          code=$?
+          echo "::notice title=create-catalog exit=${code}::$(printf '%s' "$out" | tr '\n' ' ' | cut -c1-1500)"
+          exit $code
+      - name: Read it from a SQL warehouse
+        run: |
+          q() { databricks api post /api/2.0/sql/statements --json "$(jq -nc --arg w "$WAREHOUSE" --arg s "$1" '{warehouse_id:$w,wait_timeout:"50s",statement:$s}')" | jq -c '{state:.status.state, err:.status.error.message, rows:.result.data_array}'; }
+          echo "::notice title=schemas::$(q "SHOW SCHEMAS IN $CATALOG")"
+          echo "::notice title=tables::$(q "SHOW TABLES IN $CATALOG.pdoom")"
+          echo "::notice title=sessions::$(q "SELECT player_type, engine, outcome, count(*) FROM $CATALOG.pdoom.doom_sessions GROUP BY ALL")"

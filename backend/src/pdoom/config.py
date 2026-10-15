@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     warehouse_id: str = ""
     uc_catalog: str = "main"
     uc_schema: str = "pdoom"
+    uc_lakebase_catalog: str = ""  # set when telemetry lives in Lakebase
 
     sink: Literal["memory", "jsonl", "sql", "lakebase", "both"] = "memory"
     jsonl_path: str = "telemetry.jsonl"

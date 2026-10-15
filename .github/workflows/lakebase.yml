@@ -97,3 +97,14 @@ jobs:
           echo "::notice title=cdf status by name::$(databricks postgres get-cdf-status "$name" -o json 2>&1 | tr '\n' ' ' | cut -c1-1200)"
           st=$(databricks postgres list-cdf-statuses "$D" -o json 2>&1)
           echo "::notice title=cdf status::$(printf '%s' "$st" | tr '\n' ' ' | cut -c1-1500)"
+      - name: Register the database in Unity Catalog
+        run: |
+          set +e
+          C=pdoom_lakebase
+          if databricks postgres get-catalog "catalogs/$C" -o json >/dev/null 2>&1; then
+            echo "::notice title=uc catalog::$C already registered"; exit 0
+          fi
+          out=$(databricks postgres create-catalog "$C" --json "{\"spec\":{\"postgres_database\":\"$DB\",\"branch\":\"projects/$PROJECT/branches/production\"}}" -o json 2>&1)
+          code=$?
+          echo "::notice title=create-catalog exit=${code}::$(printf '%s' "$out" | tr '\n' ' ' | cut -c1-600)"
+          exit $code

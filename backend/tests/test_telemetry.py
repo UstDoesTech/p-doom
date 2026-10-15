@@ -65,9 +65,9 @@ def test_identifiers_are_validated():
 
 
 def test_python_columns_match_the_ddl():
-    ddl = (Path(__file__).parents[2] / "databricks/sql/01_tables.sql").read_text()
+    ddl = (Path(__file__).parents[2] / "databricks/sql/01_tables.uc.sql").read_text()
     for table, spec in COLUMNS.items():
         match = re.search(rf"\.{table} \(\n(.*?)\n\)", ddl, re.DOTALL)
-        assert match, f"{table} not found in 01_tables.sql"
+        assert match, f"{table} not found in 01_tables.uc.sql"
         ddl_cols = [line.split()[0] for line in match.group(1).splitlines()]
         assert ddl_cols == [name for name, _, _ in spec], table

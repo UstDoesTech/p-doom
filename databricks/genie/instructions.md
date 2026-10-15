@@ -15,3 +15,5 @@ Paste into the Genie space's general instructions. Add these tables to the space
   `doom_leaderboard`, and show it beside the observed any-clear rate.
 - A timeout is neither a death nor a clear.
 - `doom_decisions.latency_ms` is the model's thinking time. `error` is non-null when a decision failed.
+
+- The tables are live views over the Lakebase database (catalog `pdoom_lakebase`). `doom_decisions.raw_output` is JSON text; use `from_json` or `get_json_object` on it.

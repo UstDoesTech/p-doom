@@ -94,9 +94,16 @@ jobs:
           code=$?
           echo "::notice title=lakebase grants exit=${code}::$(printf '%s' "$out" | tr '\n' '|' | cut -c1-600)"
           exit $code
-      - name: Tables and views
+      - name: Register Lakebase in Unity Catalog
+        run: |
+          databricks postgres get-catalog catalogs/pdoom_lakebase -o json >/dev/null 2>&1 || \
+            databricks postgres create-catalog pdoom_lakebase \
+              --json '{"spec":{"postgres_database":"pdoom","branch":"projects/pdoom/branches/production"}}' >/dev/null
+          echo "::notice title=uc catalog::pdoom_lakebase registered"
+      - name: Views and metric view over Lakebase
         working-directory: backend
         env:
+          PDOOM_UC_LAKEBASE_CATALOG: pdoom_lakebase
           PDOOM_WAREHOUSE_ID: ${{ env.WAREHOUSE }}
           PDOOM_UC_CATALOG: ${{ env.CATALOG }}
           PDOOM_UC_SCHEMA: ${{ env.SCHEMA }}
