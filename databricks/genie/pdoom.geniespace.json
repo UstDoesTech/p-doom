@@ -1,0 +1,176 @@
+{
+  "version": 2,
+  "config": {
+    "sample_questions": [
+      {
+        "id": "35c721a673ddeaba0dd235f4fc36977d",
+        "question": [
+          "How many games were abandoned, stopped or lost, by player type?"
+        ]
+      },
+      {
+        "id": "b1c434eb2ed740c79a66c8b49cf76422",
+        "question": [
+          "On how many seeds did at least one machine player clear the level?"
+        ]
+      },
+      {
+        "id": "b5c9e024ffc10aefd186485bd704e36e",
+        "question": [
+          "Which machine players fail the most decisions?"
+        ]
+      },
+      {
+        "id": "cec3a27bdc83c26db2008e8fa290199c",
+        "question": [
+          "What is p(doom) for each player type?"
+        ]
+      },
+      {
+        "id": "d69247585fec52719687b50bcb2e8011",
+        "question": [
+          "Which player types are significantly better than the rest?"
+        ]
+      }
+    ]
+  },
+  "data_sources": {
+    "tables": [
+      {
+        "identifier": "workspace.pdoom.doom_decisions",
+        "column_configs": [
+          {
+            "column_name": "intent",
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "player_type",
+            "enable_format_assistance": true
+          }
+        ]
+      },
+      {
+        "identifier": "workspace.pdoom.doom_games",
+        "column_configs": [
+          {
+            "column_name": "engine",
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "mode",
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "outcome",
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "player_type",
+            "enable_format_assistance": true,
+            "enable_entity_matching": true
+          },
+          {
+            "column_name": "status",
+            "enable_format_assistance": true
+          }
+        ]
+      },
+      {
+        "identifier": "workspace.pdoom.doom_leaderboard",
+        "column_configs": [
+          {
+            "column_name": "player_type",
+            "enable_format_assistance": true,
+            "enable_entity_matching": true
+          }
+        ]
+      },
+      {
+        "identifier": "workspace.pdoom.doom_seed_outcomes"
+      },
+      {
+        "identifier": "workspace.pdoom.doom_sessions",
+        "column_configs": [
+          {
+            "column_name": "outcome",
+            "enable_format_assistance": true
+          }
+        ]
+      }
+    ],
+    "metric_views": [
+      {
+        "identifier": "workspace.pdoom.doom_metrics"
+      }
+    ]
+  },
+  "instructions": {
+    "example_question_sqls": [
+      {
+        "id": "0c67e34bc398912661fb40753c920a6d",
+        "question": [
+          "Which machine players fail the most decisions?"
+        ],
+        "sql": [
+          "SELECT player_type, COUNT(*) AS games, AVG(decision_failure_rate) AS failure_rate FROM workspace.pdoom.doom_games WHERE engine = 'wasm' AND player_type <> 'human' AND status <> 'open' GROUP BY player_type ORDER BY failure_rate DESC"
+        ]
+      },
+      {
+        "id": "656a08b654d04693fe4522f8db050864",
+        "question": [
+          "What is p(doom) for each player type?"
+        ],
+        "sql": [
+          "SELECT player_type, MEASURE(attempts) AS attempts, MEASURE(p_doom) AS p_doom FROM workspace.pdoom.doom_metrics WHERE engine = 'wasm' GROUP BY player_type ORDER BY p_doom"
+        ]
+      },
+      {
+        "id": "6cee4d8f76d93136c9cfb711a1426f82",
+        "question": [
+          "Which player types are significantly better than the rest?"
+        ],
+        "sql": [
+          "SELECT player_type, attempts, p_doom, p_doom_low, p_doom_high FROM workspace.pdoom.doom_leaderboard WHERE engine = 'wasm' ORDER BY p_doom"
+        ]
+      },
+      {
+        "id": "744ee4fbffcb5ab2e6e978429f105fd3",
+        "question": [
+          "How many games were abandoned, stopped or lost, by player type?"
+        ],
+        "sql": [
+          "SELECT player_type, MEASURE(games_started) AS games_started, MEASURE(aborted) AS aborted, MEASURE(abandoned) AS abandoned, MEASURE(lost) AS lost FROM workspace.pdoom.doom_metrics WHERE engine = 'wasm' GROUP BY player_type"
+        ]
+      },
+      {
+        "id": "a765e8794bc8b3d43d6b5bed7dae3227",
+        "question": [
+          "On how many seeds did at least one machine player clear the level?"
+        ],
+        "sql": [
+          "SELECT level, mode, COUNT(*) AS seeds, SUM(cleared_any) AS seeds_cleared, AVG(cleared_any) AS any_clear_rate FROM workspace.pdoom.doom_seed_outcomes WHERE engine = 'wasm' GROUP BY level, mode"
+        ]
+      }
+    ],
+    "text_instructions": [
+      {
+        "id": "1cb251ec0d568de6a929b520c4aed8d1",
+        "content": [
+          "A session is one attempt at one level. p(doom) = deaths / attempts for a player type.",
+          "Always filter `engine = 'wasm'`. Rows with `engine = 'mock'` are pipeline tests and must never appear.",
+          "Never mix `mode` values in one comparison. Group or filter by `mode`.",
+          "Always show `attempts` beside any rate. A rate from a few attempts means little.",
+          "Prefer `doom_metrics` for rates by player type, mode, level, seed or day. Use `MEASURE()`.",
+          "`doom_leaderboard` has Wilson 95% intervals. Use it when asked who is best or whether a gap is real.",
+          "The chance that at least one machine player type clears a seed is `cleared_any` in `doom_seed_outcomes`; the any-clear rate is `AVG(cleared_any)`. It cannot be a metric view measure. Humans are excluded from it.",
+          "Roster p(doom) = 1 - product of (1 - clear_rate) over machine player types. Compute it from `doom_leaderboard`, and show it beside the observed any-clear rate.",
+          "A timeout is neither a death nor a clear.",
+          "Outcomes: cleared, died, timeout, aborted (player pressed Stop), abandoned (tab closed or idle for 15 minutes), error (the game loop crashed). `doom_sessions` holds all of them. A session still open after an hour shows as status 'lost' in `doom_games`.",
+          "Only `doom_games.counts_as_attempt = true` rows are attempts: outcome cleared, died or timeout, and, for machine players, no more than half the decisions failed or timed out. Use `doom_games` for anything about abandoned, aborted, lost or unreliable games; use `doom_metrics` or `doom_leaderboard` for rates. `doom_leaderboard.excluded_games` counts what was left out.",
+          "`doom_decisions.latency_ms` is the model's thinking time. `error` is non-null when a decision failed.",
+          "The tables are live views over the Lakebase database (catalog `pdoom_lakebase`). `doom_decisions.raw_output` is JSON text; use `from_json` or `get_json_object` on it."
+        ]
+      }
+    ]
+  }
+}
