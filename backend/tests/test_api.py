@@ -13,9 +13,9 @@ STATE = {
 }
 
 
-def make(sink=None):
+def make(sink=None, **settings):
     sink = sink or MemorySink()
-    app = create_app(Settings(_env_file=None, sink="memory"), sink=sink)
+    app = create_app(Settings(_env_file=None, sink="memory", **settings), sink=sink)
     return TestClient(app), sink
 
 
@@ -35,7 +35,7 @@ def test_health_and_player_list():
     assert client.get("/api/health").json()["databricks_configured"] is False
     players = {p["player_type"]: p for p in client.get("/api/players").json()}
     assert players["rule_bot"]["available"] is True
-    assert players["ai_decide"]["available"] is False
+    assert players["ai_decide"]["available"] is True  # REST needs no warehouse
     assert len(players) == 8
 
 
@@ -67,7 +67,7 @@ def test_full_rule_bot_session_lands_in_the_sink():
 
 
 def test_unavailable_players_say_why():
-    client, _ = make()
+    client, _ = make(ai_decide_api=False)
     assert start(client, "ai_decide").status_code == 503
     assert start(client, "tool_agent").status_code == 503
     assert start(client, "human").status_code == 201

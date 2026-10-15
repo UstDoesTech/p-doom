@@ -5,7 +5,7 @@ from __future__ import annotations
 from ..config import Settings
 from ..databricks_sql import SqlRunner
 from ..models import PlayerType
-from .ai_decide import AiDecidePlayer
+from .ai_decide import AiDecideApi, AiDecidePlayer, load_questions
 from .base import Player, PlayerUnavailable
 from .bc_policy import DEFAULT_MODEL as BC_DEFAULT
 from .bc_policy import BcPolicy
@@ -51,10 +51,13 @@ def build_registry(settings: Settings, sql: SqlRunner | None) -> PlayerRegistry:
     reg.mark_unavailable(PlayerType.human, 400, "Humans play in the browser; no decisions needed")
     reg.register(RuleBot())
 
-    if sql is not None:
-        reg.register(AiDecidePlayer(sql))
+    if settings.ai_decide_api or sql is not None:
+        api = AiDecideApi(load_questions()) if settings.ai_decide_api else None
+        reg.register(AiDecidePlayer(sql, api=api))
     else:
-        reg.mark_unavailable(PlayerType.ai_decide, 503, "PDOOM_WAREHOUSE_ID is not set")
+        reg.mark_unavailable(
+            PlayerType.ai_decide, 503, "PDOOM_AI_DECIDE_API is off and no warehouse is set"
+        )
 
     if settings.vision_endpoint:
         reg.register(VisionPlayer(settings.vision_endpoint))

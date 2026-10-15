@@ -101,3 +101,87 @@ def test_questions_cover_every_intent():
 
 def test_sql_literal_escapes_quotes_and_backslashes():
     assert sql_literal("it's \\ here") == "it\\'s \\\\ here"
+
+
+# ---- REST primary, SQL backup -----------------------------------------------------------
+
+
+class FakeApi:
+    def __init__(self, *replies):
+        self.replies = list(replies)
+        self.states = []
+
+    def run(self, state):
+        self.states.append(state)
+        reply = self.replies.pop(0) if len(self.replies) > 1 else self.replies[0]
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+
+def test_rest_is_tried_first_and_sql_is_left_alone():
+    api, sql = FakeApi(GOOD), FakeSql([[json.dumps(GOOD)]])
+    d = AiDecidePlayer(sql, api=api).decide(game_state())
+    assert d.intent == Intent.fire and d.raw_output["transport"] == "rest"
+    assert sql.calls == [] and len(api.states) == 1
+
+
+def test_sql_backs_up_a_failed_rest_call():
+    sql = FakeSql([[json.dumps(GOOD)]])
+    d = AiDecidePlayer(sql, api=FakeApi(RuntimeError("403 scope"))).decide(game_state())
+    assert d.intent == Intent.fire
+    assert d.raw_output["transport"] == "sql" and "403 scope" in d.raw_output["rest_error"]
+
+
+def test_sql_backs_up_a_rest_reply_with_no_answer():
+    bad = {"response": None, "error_message": "model unavailable"}
+    d = AiDecidePlayer(FakeSql([[json.dumps(GOOD)]]), api=FakeApi(bad)).decide(game_state())
+    assert d.raw_output["transport"] == "sql" and "model unavailable" in d.raw_output["rest_error"]
+
+
+def test_rest_only_returns_the_error_when_there_is_no_backup():
+    d = AiDecidePlayer(api=FakeApi(RuntimeError("down"))).decide(game_state())
+    assert d.intent is None and "down" in d.error
+
+
+def test_rest_pauses_after_repeated_failures_then_recovers():
+    now = [0.0]
+    api = FakeApi(RuntimeError("down"))
+    sql = FakeSql([[json.dumps(GOOD)]])
+    player = AiDecidePlayer(sql, api=api, clock=lambda: now[0])
+    for _ in range(3):
+        player.decide(game_state())
+    assert len(api.states) == 3
+    player.decide(game_state())  # paused: REST is not tried
+    assert len(api.states) == 3 and len(sql.calls) == 4
+    now[0] = 61.0
+    api.replies = [GOOD]
+    assert player.decide(game_state()).raw_output["transport"] == "rest"
+
+
+def test_rest_request_matches_the_documented_shape():
+    class Client:
+        def __init__(self):
+            self.api_client = self
+            self.sent = None
+
+        def do(self, method, path, body=None):
+            self.sent = (method, path, body)
+            return GOOD
+
+    client = Client()
+    from pdoom.players.ai_decide import AiDecideApi
+
+    AiDecidePlayer(api=AiDecideApi(load_questions(), client)).decide(game_state())
+    method, path, body = client.sent
+    assert (method, path) == ("POST", "/api/2.0/ai-functions/ai-decide")
+    assert set(body) == {"state", "questions", "options"} and body["options"] == {"version": "1.0"}
+    assert isinstance(body["state"], dict) and "seed" not in body["state"]
+    assert set(body["questions"]) == {"intent", "threat", "danger"}
+
+
+def test_needs_at_least_one_transport():
+    import pytest
+
+    with pytest.raises(ValueError):
+        AiDecidePlayer()
