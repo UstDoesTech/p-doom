@@ -1,0 +1,20 @@
+# Read-only: which model serving endpoints exist, for choosing tool_agent and vision_llm endpoints.
+name: endpoints-inspect
+on:
+  workflow_dispatch:
+  push:
+    branches: [fix/telemetry-gaps]
+    paths: [.github/workflows/endpoints-inspect.yml]
+permissions:
+  contents: read
+env:
+  DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+  DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
+  DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: databricks/setup-cli@main
+      - run: |
+          echo "::notice title=serving endpoints::$(databricks serving-endpoints list -o json 2>&1 | jq -c '[.[]?|{name, task, state: .state.ready, type: .endpoint_type, ent: [.config.served_entities[]?|(.foundation_model.name // .entity_name)][0:1]}]' 2>&1 | cut -c1-3500)"
