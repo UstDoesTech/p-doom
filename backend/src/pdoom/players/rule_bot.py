@@ -258,10 +258,16 @@ class RuleBot:
                 distance = max(distance - 40.0, 8.0)  # stop at the door, not in it
         else:
             bearing, distance = state.exit_bearing, 9999.0
-        return self._go(state, mem, rule, bearing, distance)
+        return self._go(state, mem, rule, bearing, distance, trusted=route is not None)
 
     def _go(
-        self, state: GameState, mem: Memory, rule: str, bearing: float | None, distance: float
+        self,
+        state: GameState,
+        mem: Memory,
+        rule: str,
+        bearing: float | None,
+        distance: float,
+        trusted: bool = False,
     ) -> tuple[Intent, str, int | None]:
         """Walk towards a bearing: turn to face it, then step. With wall distances, go round
         whatever is in the way."""
@@ -269,7 +275,9 @@ class RuleBot:
         if bearing is None:
             return self._advance_or_unstick(state, mem, rule, None, 9999.0)
 
-        if walls is not None and mem.stuck == 0:
+        # A route waypoint is picked by the engine as the furthest point in a clear straight line,
+        # so its direction is walkable even when the wall rays beside us look cramped.
+        if walls is not None and mem.stuck == 0 and not trusted:
             facing = state.player.angle
             heading, why = self._heading(walls, mem, state.tic, facing, bearing, distance)
             if why is not None:
@@ -280,7 +288,7 @@ class RuleBot:
             turn = Intent.turn_left if bearing < 0 else Intent.turn_right
             why = "exit" if rule.startswith("advance") else rule
             return turn, "face_" + why, turn_hold(bearing)
-        return self._advance_or_unstick(state, mem, rule, bearing, distance)
+        return self._advance_or_unstick(state, mem, rule, bearing, distance, trusted)
 
     @staticmethod
     def _heading(
@@ -311,14 +319,20 @@ class RuleBot:
         return best, "detour"
 
     def _advance_or_unstick(
-        self, state: GameState, mem: Memory, rule: str, bearing: float | None, distance: float
+        self,
+        state: GameState,
+        mem: Memory,
+        rule: str,
+        bearing: float | None,
+        distance: float,
+        trusted: bool = False,
     ) -> tuple[Intent, str, int | None]:
         """Walk forward. If that has not moved us, work through the usual causes in turn: a door
         or switch that needs `use`, a corner to slide round, a wall to turn away from."""
         walls = state.walls
         if mem.stuck == 0:
             if walls is not None:
-                if walls.ahead < WALL_CLOSE:
+                if walls.ahead < WALL_CLOSE and not trusted:
                     return self._wall_turn(walls, mem, bearing), "wall_turn", 8
                 mem.turn_dir = 0
                 room = min(distance, walls.ahead - 24.0)

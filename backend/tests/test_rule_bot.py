@@ -221,7 +221,7 @@ def test_wall_turn_keeps_its_direction_until_the_way_is_clear():
 def test_wall_turn_leans_towards_the_goal():
     even = Walls(ahead=20, ahead_right=200, right=200, behind_right=512, behind=512,
                  behind_left=512, left=200, ahead_left=200)
-    d = RuleBot().decide(scene(walls=even, route=Route(bearing=-10.0, distance=200, via="portal")))
+    d = RuleBot().decide(scene(walls=even, exit_bearing=-10.0))  # no route: the wall rays decide
     assert d.intent == Intent.turn_left
 
 
