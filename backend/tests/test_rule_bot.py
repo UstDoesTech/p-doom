@@ -97,7 +97,7 @@ def test_out_of_ammo_does_not_pick_a_fight_at_range():
 
 def test_stuck_walking_forward_tries_use_then_slides_then_turns():
     bot = RuleBot()
-    out = play(bot, *[state(tic=1 + i * 35) for i in range(8)])
+    out = play(bot, *[state(tic=1 + i * 15) for i in range(8)])
     assert out == [
         Intent.advance,       # first look
         Intent.use,           # advanced, did not move: a door?
@@ -238,3 +238,9 @@ def test_gives_up_on_a_pickup_it_cannot_reach():
 def test_fetches_a_key_that_is_close():
     d = RuleBot().decide(scene(pickups=[pickup("key", 0.0, 200.0)], exit_bearing=0.0))
     assert d.raw_output["rule"] == "key"
+
+
+def test_escapes_a_jam_it_cannot_explain():
+    bot = RuleBot()
+    seen = [bot.decide(state(tic=1 + i * 35)).raw_output["rule"] for i in range(14)]
+    assert "escape_back" in seen and "escape_turn" in seen and "escape_walk" in seen
