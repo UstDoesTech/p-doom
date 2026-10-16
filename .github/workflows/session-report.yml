@@ -25,7 +25,7 @@ jobs:
       DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
       DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
       DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
-      SESSION: ${{ inputs.session || 'c276eef0' }}
+      SESSION: ${{ inputs.session || 'b05e162a' }}
       LAST: ${{ inputs.last || '25' }}
     steps:
       - uses: actions/checkout@v4
@@ -40,6 +40,7 @@ jobs:
           q session "select session_id, player_type, mode, engine, level, seed, outcome, round(duration_s::numeric,1), kills, decisions, decision_errors, decision_timeouts, started_at from pdoom.doom_sessions where $W"
           q last_samples "select tic, health, armor, weapon, ammo, round(x::numeric), round(y::numeric), round(angle::numeric), action from (select * from pdoom.doom_events where $W order by tic desc limit $LAST) t order by tic"
           q last_decisions "select tic, intent, latency_ms, coalesce(raw_output->>'rule', raw_output->'assist'->>'note', ''), coalesce(raw_output->'assist'->'unstick'->>'step',''), left(coalesce(error,''),60) from (select * from pdoom.doom_decisions where $W order by tic desc limit $LAST) t order by tic"
+          q health_changes "select tic, health, armor, ammo, action from (select tic, health, armor, ammo, action, lag(health) over (order by tic) as ph from pdoom.doom_events where $W) t where ph is null or health <> ph order by tic"
           q intents "select intent, count(*), count(*) filter (where raw_output->'assist'->'unstick' is not null) as unstick from pdoom.doom_decisions where $W group by 1 order by 2 desc"
           q path "select (tic/525)*15 as sec, min(health), round(avg(x)::numeric), round(avg(y)::numeric), round(min(x)::numeric)||'..'||round(max(x)::numeric) as xr, round(min(y)::numeric)||'..'||round(max(y)::numeric) as yr, count(*) from pdoom.doom_events where $W group by 1 order by 1"
           q totals "select count(*), min(tic), max(tic), min(health), max(health) from pdoom.doom_events where $W"
