@@ -84,11 +84,16 @@ jobs:
           code=$?
           echo "::notice title=bundle deploy exit=${code}::$(printf '%s' "$out" | tail -c 1500 | tr '\n' '|')"
           exit $code
-      - name: Lakebase endpoint diagnostics
-        continue-on-error: true
+      - name: Enable the Lakebase endpoint if it was disabled
         run: |
-          databricks postgres get-endpoint projects/pdoom/branches/production/endpoints/primary -o json | jq -c . | cut -c1-1500 | sed 's/^/::notice title=endpoint json::/'
-          databricks postgres update-endpoint --help 2>&1 | head -40 | tr '\n' '|' | sed 's/^/::notice title=update-endpoint help::/'
+          set +e
+          ep=projects/pdoom/branches/production/endpoints/primary
+          dis=$(databricks postgres get-endpoint "$ep" -o json | jq -r '.status.disabled')
+          if [ "$dis" = true ]; then
+            out=$(databricks postgres update-endpoint "$ep" spec.disabled --json '{"spec":{"disabled":false}}' -o json 2>&1)
+            echo "::notice title=enable endpoint exit=$?::$(printf '%s' "$out" | tr '\n' '|' | cut -c1-700)"
+          fi
+          echo "::notice title=endpoint after::$(databricks postgres get-endpoint "$ep" -o json | jq -c '.status|{current_state,disabled}')"
       - name: Lakebase tables and the app's grants
         run: |
           set +e
