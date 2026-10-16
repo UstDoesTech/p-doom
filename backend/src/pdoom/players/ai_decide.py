@@ -14,6 +14,12 @@ and, when no enemy is in sight and the model turned the wrong way round the rout
 it the right way. The model still chooses what to do; the assist only sizes and aims the step.
 raw_output records what it changed under "assist".
 
+The model has no memory, so it can walk into a barrel or a corner every second and never learn
+why nothing moves. The player remembers where it was and what it asked for; when two decisions in
+a row asked to move and the player did not, and no enemy is in sight, it overrides the model with
+a short slide to one side, then the other, then a step back and a turn, until it is moving again.
+raw_output records it under "assist" as "unstick".
+
 Each decision's raw_output carries "transport": "rest" or "sql", and "rest_error" when the backup
 was used, so a run shows which path answered.
 """
@@ -22,7 +28,10 @@ from __future__ import annotations
 
 import json
 import logging
+import math
+import threading
 import time
+from dataclasses import dataclass
 from importlib import resources
 from typing import Any
 
@@ -114,6 +123,22 @@ class AiDecideApi:
         return self.client.api_client.do("POST", API_PATH, body=body)
 
 
+MOVING = (Intent.advance, Intent.retreat, Intent.strafe_left, Intent.strafe_right)
+STUCK_UNITS_PER_TIC = 2.0  # asked to walk, it should cover at least this per tic held
+UNSTICK_AFTER = 2  # decisions in a row without moving before the model is overridden
+UNSTICK_HOLD = 10
+
+
+@dataclass
+class _Track:
+    tic: int = -1
+    x: float = 0.0
+    y: float = 0.0
+    last: Intent | None = None
+    hold: int | None = None
+    stuck: int = 0
+
+
 class AiDecidePlayer:
     player_type = PlayerType.ai_decide
 
@@ -129,6 +154,8 @@ class AiDecidePlayer:
             raise ValueError("AiDecidePlayer needs the REST API, a SQL runner, or both")
         self.sql, self.api, self._clock = sql, api, clock
         self.assist = assist
+        self._tracks: dict[tuple[str, int], _Track] = {}
+        self._lock = threading.Lock()
         self._failures = 0
         self._paused_until = 0.0
         questions_json = json.dumps(questions or load_questions(), separators=(",", ":"))
@@ -139,7 +166,65 @@ class AiDecidePlayer:
 
     def decide(self, state: GameState, screenshot_b64: str | None = None) -> Decision:
         decision = self._decide(state)
-        return shape(state, decision) if self.assist else decision
+        if not self.assist:
+            return decision
+        decision = shape(state, decision)
+        with self._lock:
+            return self._unstick(state, decision)
+
+    def _unstick(self, state: GameState, decision: Decision) -> Decision:
+        key = (state.level, state.seed)
+        track = self._tracks.get(key)
+        if track is None or state.tic < track.tic:
+            track = self._tracks[key] = _Track()
+            if len(self._tracks) > 256:
+                self._tracks.pop(next(iter(self._tracks)))
+        p = state.player
+        if track.tic >= 0 and track.last in MOVING:
+            elapsed = state.tic - track.tic
+            if track.hold is not None:
+                elapsed = min(elapsed, track.hold)
+            expected = max(2.0, STUCK_UNITS_PER_TIC * elapsed) if elapsed > 0 else 6.0
+            if math.hypot(p.x - track.x, p.y - track.y) < expected:
+                track.stuck += 1
+            else:
+                track.stuck = 0
+        elif track.stuck and track.last not in MOVING:
+            pass  # a turn or a shot while stuck neither proves nor clears it
+        else:
+            track.stuck = 0
+
+        fighting = any(e.line_of_sight and e.distance <= ENGAGE_RANGE for e in state.enemies)
+        if track.stuck >= UNSTICK_AFTER and not fighting:
+            bearing = state.route.bearing if state.route else None
+            left_first = bearing is not None and bearing < 0
+            first = Intent.strafe_left if left_first else Intent.strafe_right
+            other = Intent.strafe_right if first == Intent.strafe_left else Intent.strafe_left
+            step = (track.stuck - UNSTICK_AFTER) % 5
+            intent, hold = [
+                (first, UNSTICK_HOLD),
+                (Intent.advance, UNSTICK_HOLD),
+                (other, UNSTICK_HOLD * 2),
+                (Intent.advance, UNSTICK_HOLD),
+                (Intent.retreat, 8),
+            ][step]
+            raw = decision.raw_output
+            out = dict(raw) if isinstance(raw, dict) else {"output": raw}
+            out["assist"] = {
+                **(out.get("assist") or {}),
+                "unstick": {
+                    "stuck": track.stuck,
+                    "model_intent": str(decision.intent),
+                    "step": step,
+                },
+            }
+            decision = decision.model_copy(
+                update={"intent": intent, "hold_tics": hold, "raw_output": out}
+            )
+
+        track.tic, track.x, track.y = state.tic, p.x, p.y
+        track.last, track.hold = decision.intent, decision.hold_tics
+        return decision
 
     def _decide(self, state: GameState) -> Decision:
         rest_error: str | None = None

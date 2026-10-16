@@ -264,3 +264,52 @@ def test_the_assist_can_be_switched_off():
     on = AiDecidePlayer(api=Api())
     off = AiDecidePlayer(api=Api(), assist=False)
     assert off.assist is False and on.assist is True
+
+
+def _at(tic, x, y):
+    player = PlayerState(health=100, x=x, y=y, angle=0)
+    return GameState(tic=tic, level="E1M1", seed=3, player=player)
+
+
+def _model(intent):
+    return Decision(intent=intent, raw_output={})
+
+
+def test_unsticks_when_walking_into_a_barrel_and_clears_once_moving():
+    from pdoom.players.ai_decide import AiDecidePlayer
+
+    class Fixed(AiDecidePlayer):
+        def _decide(self, state):
+            return _model(Intent.advance)
+
+    bot = Fixed(sql=FakeSql(None))
+    # advancing but the position never changes
+    d0 = bot.decide(_at(10, 100, 100))
+    assert d0.intent == Intent.advance
+    d1 = bot.decide(_at(20, 100, 100))
+    assert d1.intent == Intent.advance  # one miss is not enough
+    d2 = bot.decide(_at(30, 100, 100))
+    assert d2.intent in (Intent.strafe_left, Intent.strafe_right)
+    assert d2.raw_output["assist"]["unstick"]["step"] == 0
+    d3 = bot.decide(_at(40, 100, 100))  # the slide did not move it either: next step
+    assert d3.intent == Intent.advance
+    assert d3.raw_output["assist"]["unstick"]["step"] == 1
+    # it moved: back to the model
+    d4 = bot.decide(_at(50, 100, 160))
+    assert "unstick" not in (d4.raw_output.get("assist") or {})
+    assert d4.intent == Intent.advance
+
+
+def test_does_not_override_while_an_enemy_is_in_sight():
+    from pdoom.players.ai_decide import AiDecidePlayer
+
+    class Fixed(AiDecidePlayer):
+        def _decide(self, state):
+            return _model(Intent.advance)
+
+    bot = Fixed(sql=FakeSql(None))
+    for t in (10, 20, 30, 40):
+        s = _at(t, 5, 5)
+        s.enemies = [Enemy(type="imp", distance=300, bearing=0, line_of_sight=True)]
+        d = bot.decide(s)
+        assert d.intent == Intent.advance
