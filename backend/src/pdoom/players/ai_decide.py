@@ -7,6 +7,13 @@ The SQL function's questions argument must be a constant, so the JSON is embedde
 statement text and the state goes in as a parameter. to_json() turns the returned VARIANT into
 text the warehouse API hands back reliably.
 
+The model picks one intent a second. Left alone, a held turn swings about 90 degrees and a held
+walk carries on past the point it was for, so the player cannot follow a route. After the model
+answers, `shape()` says how many tics to hold the key for, from the route (or the nearest enemy),
+and, when no enemy is in sight and the model turned the wrong way round the route bearing, turns
+it the right way. The model still chooses what to do; the assist only sizes and aims the step.
+raw_output records what it changed under "assist".
+
 Each decision's raw_output carries "transport": "rest" or "sql", and "rest_error" when the backup
 was used, so a run shows which path answered.
 """
@@ -21,6 +28,7 @@ from typing import Any
 
 from ..databricks_sql import SqlRunner
 from ..models import Decision, GameState, Intent, PlayerType
+from .rule_bot import ENGAGE_RANGE, turn_hold, walk_hold
 
 EXCLUDE_FROM_STATE = {"tic": True, "seed": True}
 API_PATH = "/api/2.0/ai-functions/ai-decide"
@@ -115,10 +123,12 @@ class AiDecidePlayer:
         questions: dict[str, Any] | None = None,
         api: AiDecideApi | None = None,
         clock: Any = time.monotonic,
+        assist: bool = True,
     ) -> None:
         if sql is None and api is None:
             raise ValueError("AiDecidePlayer needs the REST API, a SQL runner, or both")
         self.sql, self.api, self._clock = sql, api, clock
+        self.assist = assist
         self._failures = 0
         self._paused_until = 0.0
         questions_json = json.dumps(questions or load_questions(), separators=(",", ":"))
@@ -128,6 +138,10 @@ class AiDecidePlayer:
         )
 
     def decide(self, state: GameState, screenshot_b64: str | None = None) -> Decision:
+        decision = self._decide(state)
+        return shape(state, decision) if self.assist else decision
+
+    def _decide(self, state: GameState) -> Decision:
         rest_error: str | None = None
         if self.api is not None and self._clock() >= self._paused_until:
             decision, rest_error = self._decide_rest(state)
@@ -170,6 +184,50 @@ class AiDecidePlayer:
         if not rows or not rows[0] or rows[0][0] is None:
             return Decision(error="ai_decide returned no rows")
         return parse_decision(rows[0][0])
+
+
+ALIGNED_DEG = 15.0
+FLIP_ABOVE_DEG = 20.0
+
+
+def shape(state: GameState, decision: Decision) -> Decision:
+    """Size and aim the model's step. Returns the decision unchanged when it has no intent or
+    there is nothing to steer by."""
+    intent = decision.intent
+    if intent is None:
+        return decision
+    visible = [e for e in state.enemies if e.line_of_sight and e.distance <= ENGAGE_RANGE]
+    nearest = min(visible, key=lambda e: e.distance, default=None)
+    route = state.route
+    hold: int | None = None
+    note: str | None = None
+
+    if intent in (Intent.turn_left, Intent.turn_right):
+        target = nearest.bearing if nearest else route.bearing if route else None
+        if target is None:
+            return decision
+        if abs(target) <= ALIGNED_DEG / 2:
+            return decision
+        right = target > 0
+        wrong_way = (intent == Intent.turn_right) != right
+        if nearest is None and abs(target) > FLIP_ABOVE_DEG and wrong_way:
+            intent = Intent.turn_right if right else Intent.turn_left
+            note = f"turned {'right' if right else 'left'} toward the route, not away"
+        elif nearest is not None and wrong_way:
+            return decision  # turning away from an enemy on purpose
+        hold = turn_hold(target)
+    elif intent == Intent.advance and nearest is None and route is not None:
+        reach = route.distance
+        if route.via in ("door", "exit", "switch"):
+            reach = max(0.0, reach - 40.0)
+        hold = walk_hold(reach)
+
+    if hold is None and note is None:
+        return decision
+    raw = decision.raw_output
+    out = dict(raw) if isinstance(raw, dict) else {"output": raw}
+    out["assist"] = {"hold_tics": hold, **({"note": note} if note else {})}
+    return decision.model_copy(update={"intent": intent, "hold_tics": hold, "raw_output": out})
 
 
 def _tag(decision: Decision, transport: str, rest_error: str | None = None) -> Decision:
