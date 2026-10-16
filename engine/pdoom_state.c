@@ -1034,6 +1034,12 @@ static int player_cell(const mobj_t *me, double *cost_out)
             if (jx < 0 || jy < 0 || jx >= g_w || jy >= g_h) continue;
             c = jy * g_w + jx;
             if (g_dist[c] >= (1 << 27)) continue;
+            {
+                /* a cell across a wall or a raised or closed gate is not where the player is */
+                short sg[2];
+                int k = edge_info(px, py, cell_x(jx), cell_y(jy), sg);
+                if (k == 255 || (k & GATED)) continue;
+            }
             cost = g_dist[c] + hypot2(cell_x(jx), cell_y(jy), px, py);
             if (cost < best_cost) {
                 best_cost = cost;

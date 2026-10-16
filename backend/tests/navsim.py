@@ -603,6 +603,21 @@ class Level:
                     cells.add(c)
         return cells, "kill", []
 
+    def _snap_ok(self, g, ax, ay, bx, by):
+        """Can the player at (ax, ay) walk to (bx, by) as things stand? A cell on the far side of
+        a wall, or of a raised or closed gate, is not where the player is, whatever its cost."""
+        for ln in self._lines_near(g, ax, ay, bx, by):
+            if not self._crosses(ax, ay, bx, by, ln):
+                continue
+            if ln.back is None or ln.flags & ML_BLOCKING:
+                return False
+            if self._door_class(ln) is not None:
+                continue
+            near, far = (ln.front, ln.back) if ln.side(ax, ay) == 0 else (ln.back, ln.front)
+            if not self.gap_open(ln) or far.floor - near.floor > STEP_HEIGHT:
+                return False
+        return True
+
     def _player_cell(self, dist, px, py):
         g = self._g
         c = self.CELL
@@ -613,6 +628,8 @@ class Level:
                 jx, jy = ix + dx, iy + dy
                 if 0 <= jx < g["w"] and 0 <= jy < g["h"] and dist[jx][jy] < 1e29:
                     cx, cy = self._cell_xy(g, jx, jy)
+                    if not self._snap_ok(g, px, py, cx, cy):
+                        continue
                     cost = dist[jx][jy] + math.hypot(cx - px, cy - py)
                     if best is None or cost < best[0]:
                         best = (cost, jx, jy)
