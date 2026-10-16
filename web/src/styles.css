@@ -422,3 +422,23 @@ progress {
     grid-template-columns: 1fr;
   }
 }
+
+.actionbar .next {
+  margin-left: auto;
+}
+
+.chain {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 12px 0 0;
+}
+
+.chip.out-cleared {
+  border-color: #2f6b3a;
+}
+
+.chip.out-died,
+.chip.out-error {
+  border-color: var(--red);
+}

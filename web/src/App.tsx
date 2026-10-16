@@ -4,6 +4,7 @@ import type { Engine } from "./engine/Engine";
 import { MockEngine } from "./engine/MockEngine";
 import { WasmEngine } from "./engine/WasmEngine";
 import { planSet, runSet } from "./batch";
+import { nextLevel } from "./levels";
 import { SessionRunner, type RunResult } from "./runner";
 import {
   PLAYER_TYPES,
@@ -95,11 +96,13 @@ export default function App() {
   const [hud, setHud] = useState<Hud | null>(null);
   const [log, setLog] = useState<LogLine[]>([]);
   const [result, setResult] = useState("");
-  const [card, setCard] = useState<{ pt: PlayerType; seed: number; r: RunResult } | null>(null);
+  const [card, setCard] = useState<{ pt: PlayerType; seed: number; r: RunResult; level: string } | null>(null);
   const [tab, setTab] = useState<Tab>("watch");
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const [focused, setFocused] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [autoNext, setAutoNext] = useState(true);
+  const [chain, setChain] = useState<Array<{ level: string; outcome: string }>>([]);
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -126,7 +129,11 @@ export default function App() {
   const availability = (pt: PlayerType) => players.find((p) => p.player_type === pt);
 
   /** One game. Returns null when it could not start, with the reason shown on the page. */
-  const runOne = async (pt: PlayerType, sd: number): Promise<RunResult | null> => {
+  const runOne = async (
+    pt: PlayerType,
+    sd: number,
+    lvl: string = level,
+  ): Promise<RunResult | null> => {
     setError("");
     setResult("");
     setCard(null);
@@ -142,7 +149,7 @@ export default function App() {
         playerType: pt,
         mode,
         engine: engineKind,
-        level,
+        level: lvl,
         seed: sd,
         decisionIntervalMs: gapFor(pt),
         eventEveryTics: 5,
@@ -174,7 +181,7 @@ export default function App() {
     try {
       const canvas = (engineKind === "wasm" ? wasmCanvasRef : mockCanvasRef).current!;
       const r = await runner.run(canvas);
-      setCard({ pt, seed: sd, r });
+      setCard({ pt, seed: sd, r, level: lvl });
       setResult(
         r.outcome === "aborted"
           ? "Stopped. The attempt is recorded as aborted and does not count toward p(doom)."
@@ -193,7 +200,21 @@ export default function App() {
   };
 
   const start = async () => {
-    const r = await runOne(playerType, seed);
+    stopSet.current = false;
+    setChain([]);
+    let lvl = level;
+    let r = await runOne(playerType, seed, lvl);
+    if (r) setChain([{ level: lvl, outcome: r.outcome }]);
+    // A cleared level leads on to the next one. Each level is its own session, started fresh,
+    // so every level has its own attempt and outcome in the data.
+    while (r && r.outcome === "cleared" && autoNext && engineKind === "wasm") {
+      const next = nextLevel(lvl);
+      if (!next || stopSet.current) break;
+      lvl = next;
+      setLevel(lvl);
+      r = await runOne(playerType, seed, lvl);
+      if (r) setChain((c) => [...c, { level: lvl, outcome: r!.outcome }]);
+    }
     if (r) setSeed((s) => s + 1);
   };
 
@@ -365,12 +386,30 @@ export default function App() {
             <span className={running ? "status live" : "status"}>
               {running ? `Running: ${playerType} on ${level}, seed ${seed}` : "Ready"}
             </span>
+            <label className="check next">
+              <input
+                type="checkbox"
+                checked={autoNext}
+                disabled={running || mock}
+                onChange={(e) => setAutoNext(e.target.checked)}
+              />
+              Go on to the next level after a clear
+            </label>
           </div>
+          {chain.length > 1 && (
+            <p className="chain">
+              {chain.map((c, i) => (
+                <span key={i} className={`chip out-${c.outcome}`}>
+                  {c.level} {OUTCOME_LABEL[c.outcome]?.toLowerCase() ?? c.outcome}
+                </span>
+              ))}
+            </p>
+          )}
           {card && !running && (
             <div className={`card outcome-${card.r.outcome}`} role="status">
               <span className="badge">{OUTCOME_LABEL[card.r.outcome] ?? card.r.outcome}</span>
               <span>
-                {card.pt} on seed {card.seed}
+                {card.pt} on {card.level}, seed {card.seed}
               </span>
               <span className="stat">{card.r.durationS.toFixed(1)} s</span>
               <span className="stat">{card.r.kills} kills</span>
