@@ -38,6 +38,7 @@ SWITCHES = {
 }
 EXIT_USE = {11, 51}
 LIFT_USE = {21, 62, 122, 123}
+TAG_DOORS = {29, 63, 103}  # a switch that opens the door sector with the same tag
 LIFT_WALK = {10, 88}
 EXIT_ANY = {11, 51, 52, 124}
 TELEPORT = {39, 97, 125, 126}
@@ -872,6 +873,12 @@ class Level:
             return "exit"
         if hit.special in LIFT_USE:
             self.start_plat(hit.tag)
+        if hit.special in TAG_DOORS and hit.tag:
+            for sec in self.sectors:
+                if sec.tag == hit.tag and sec.index not in self.doors:
+                    around = [n.ceil for ln in sec.lines for n in (ln.front, ln.back)
+                              if n is not None and n is not sec]
+                    self.doors[sec.index] = Door(sec, 1, min(around, default=sec.ceil) - 4)
         if hit.special in DOORS and hit.back is not None:
             need = DOOR_KEY.get(hit.special, 0)
             if keys is not None and need and need not in keys:
@@ -914,8 +921,11 @@ class Level:
                     del self.plats[idx]
 
     def open_tags(self) -> frozenset:
-        return frozenset(pl["sec"].tag for pl in self.plats.values()
-                         if pl["sec"].floor <= pl["low"] + STEP_HEIGHT)
+        tags = {pl["sec"].tag for pl in self.plats.values()
+                if pl["sec"].floor <= pl["low"] + STEP_HEIGHT}
+        tags |= {d.sector.tag for d in self.doors.values()
+                 if d.sector.tag and d.sector.ceil - d.sector.floor >= 56}
+        return frozenset(tags)
 
     def tick_doors(self) -> None:
         self.tick_plats()
