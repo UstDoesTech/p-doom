@@ -47,7 +47,7 @@ def game_state() -> GameState:
         level="E1M1",
         seed=7,
         player=PlayerState(health=64, x=1, y=2, angle=90),
-        enemies=[Enemy(type="zombieman", distance=420, bearing=-15, line_of_sight=True)],
+        enemies=[Enemy(type="zombieman", distance=420, bearing=-5, line_of_sight=True)],
     )
 
 
@@ -87,7 +87,7 @@ def test_statement_embeds_constant_questions_and_passes_state_as_parameter():
     assert '"type":"choice"' in statement
     state_sent = json.loads(params["state"])
     assert "tic" not in state_sent and "seed" not in state_sent
-    assert state_sent["enemies"][0]["bearing"] == -15
+    assert state_sent["enemies"][0]["bearing"] == -5
     assert decision.intent == Intent.fire
 
 
@@ -246,7 +246,9 @@ def test_an_enemy_in_sight_is_not_overridden_by_the_route():
     d = routed(Intent.turn_left, 90.0, enemies=[foe])
     assert d.intent == Intent.turn_left  # the enemy is on the left
     assert d.hold_tics is not None
-    assert routed(Intent.advance, 0.0, enemies=[foe]).hold_tics is None
+    # advancing with an enemy 60 degrees off is turned to face it, not walked at the route
+    d = routed(Intent.advance, 0.0, enemies=[foe])
+    assert d.intent == Intent.turn_left and d.raw_output["assist"]["note"] == "faced the enemy"
 
 
 def test_no_route_means_no_change():
@@ -305,14 +307,14 @@ def test_does_not_override_while_an_enemy_is_in_sight():
 
     class Fixed(AiDecidePlayer):
         def _decide(self, state):
-            return _model(Intent.advance)
+            return _model(Intent.retreat)
 
     bot = Fixed(sql=FakeSql(None))
     for t in (10, 20, 30, 40):
         s = _at(t, 5, 5)
         s.enemies = [Enemy(type="imp", distance=300, bearing=0, line_of_sight=True)]
         d = bot.decide(s)
-        assert d.intent == Intent.advance
+        assert d.intent == Intent.retreat
 
 
 def test_unsticks_when_it_jiggles_in_place_against_a_barrel():
@@ -350,3 +352,37 @@ def test_jam_clears_when_the_player_gets_away():
         bot.decide(_at(100 + i * 80, 500, 500))
     free = bot.decide(_at(700, 500, 700))  # 200 units away
     assert "unstick" not in (free.raw_output.get("assist") or {})
+
+
+def _fight(model_intent, bearing, ammo=None, distance=300):
+    from pdoom.players.ai_decide import shape
+
+    state = GameState(
+        tic=50, level="E1M1", seed=1,
+        player=PlayerState(health=80, x=0, y=0, angle=0, **({"ammo": ammo} if ammo else {})),
+        enemies=[Enemy(type="zombieman", distance=distance, bearing=bearing, line_of_sight=True)],
+    )
+    return shape(state, _model(model_intent))
+
+
+def test_an_enemy_in_the_cone_is_fired_at_even_if_the_model_wanted_to_walk():
+    """Session b05e162a never chose fire in 62 decisions and lost its 100 health."""
+    d = _fight(Intent.advance, bearing=3)
+    assert d.intent == Intent.fire and d.hold_tics is None
+
+
+def test_an_enemy_off_to_the_side_is_faced_first():
+    right = _fight(Intent.advance, bearing=40)
+    left = _fight(Intent.turn_right, bearing=-40)
+    assert right.intent == Intent.turn_right and right.hold_tics
+    assert left.intent == Intent.turn_left and left.hold_tics
+
+
+def test_retreat_and_sidesteps_are_the_models_to_choose_in_a_fight():
+    for intent in (Intent.retreat, Intent.strafe_left, Intent.strafe_right):
+        assert _fight(intent, bearing=3).intent == intent
+
+
+def test_no_ammo_means_no_forced_fire():
+    d = _fight(Intent.advance, bearing=3, ammo={"bullets": 0})
+    assert d.intent == Intent.advance

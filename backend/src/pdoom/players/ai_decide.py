@@ -14,6 +14,11 @@ and, when no enemy is in sight and the model turned the wrong way round the rout
 it the right way. The model still chooses what to do; the assist only sizes and aims the step.
 raw_output records what it changed under "assist".
 
+With an enemy in sight, in range and ammo in hand, the assist also does the aiming: if the model
+picked anything but a retreat or a sidestep, it turns to face the enemy, and once it is inside the
+fire cone it fires. Left to itself the model advanced and turned about while being shot and
+never fired (session b05e162a: 62 decisions, none of them fire, 100 health lost).
+
 The model has no memory, so it can walk into a barrel or a corner every second and never learn
 why nothing moves. The player remembers where it was and what it asked for; when two decisions in
 a row asked to move and the player did not, and no enemy is in sight, it overrides the model with
@@ -37,7 +42,7 @@ from typing import Any
 
 from ..databricks_sql import SqlRunner
 from ..models import Decision, GameState, Intent, PlayerType
-from .rule_bot import ENGAGE_RANGE, turn_hold, walk_hold
+from .rule_bot import ENGAGE_RANGE, FIRE_CONE_DEG, turn_hold, walk_hold
 
 EXCLUDE_FROM_STATE = {"tic": True, "seed": True}
 API_PATH = "/api/2.0/ai-functions/ai-decide"
@@ -296,6 +301,7 @@ class AiDecidePlayer:
         return parse_decision(rows[0][0])
 
 
+KEEP_IN_A_FIGHT = (Intent.retreat, Intent.strafe_left, Intent.strafe_right, Intent.use)
 ALIGNED_DEG = 15.0
 FLIP_ABOVE_DEG = 20.0
 
@@ -312,6 +318,18 @@ def shape(state: GameState, decision: Decision) -> Decision:
     hold: int | None = None
     note: str | None = None
 
+    has_ammo = not state.player.ammo or sum(state.player.ammo.values()) > 0
+    if nearest is not None and has_ammo and intent not in KEEP_IN_A_FIGHT:
+        # The model can pick retreat or a sidestep, but advancing or turning about while something
+        # shoots at it is how a session lost 100 health without firing once. Face it, then fire.
+        if abs(nearest.bearing) > FIRE_CONE_DEG:
+            intent = Intent.turn_right if nearest.bearing > 0 else Intent.turn_left
+            hold, note = turn_hold(nearest.bearing), "faced the enemy"
+        elif intent != Intent.fire:
+            intent, hold, note = Intent.fire, None, "fired at the enemy in the cone"
+        if note is None:
+            return decision  # already firing at it
+        return _assisted(decision, intent, hold, note)
     if intent in (Intent.turn_left, Intent.turn_right):
         target = nearest.bearing if nearest else route.bearing if route else None
         if target is None:
@@ -337,6 +355,13 @@ def shape(state: GameState, decision: Decision) -> Decision:
     raw = decision.raw_output
     out = dict(raw) if isinstance(raw, dict) else {"output": raw}
     out["assist"] = {"hold_tics": hold, **({"note": note} if note else {})}
+    return decision.model_copy(update={"intent": intent, "hold_tics": hold, "raw_output": out})
+
+
+def _assisted(decision: Decision, intent: Intent, hold: int | None, note: str) -> Decision:
+    raw = decision.raw_output
+    out = dict(raw) if isinstance(raw, dict) else {"output": raw}
+    out["assist"] = {"hold_tics": hold, "note": note, "model_intent": str(decision.intent)}
     return decision.model_copy(update={"intent": intent, "hold_tics": hold, "raw_output": out})
 
 
