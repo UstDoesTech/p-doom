@@ -158,6 +158,7 @@ class Level:
         start = next(t for t in things if t[3] == 1)
         self.start = (float(start[0]), float(start[1]), float(start[2]))
         self.doors: dict[int, Door] = {}
+        self.taken: set = set()
 
     # -- the map -------------------------------------------------------------------------------
 
@@ -663,9 +664,11 @@ class Level:
                         cells.add(c)
             return (cells, "kill", []) if cells else None
         if kind == "key":
+            self._goal_pts = []
             for t in self.things:
                 if KEY_THINGS.get(t[3]) == what:
                     cells.update(self._cells_near_point(g, float(t[0]), float(t[1]), 48.0))
+                    self._goal_pts.append((float(t[0]), float(t[1])))
             return (cells, "pickup", []) if cells else None
         lines = [ln for ln in self.lines if ln.tag == what and is_trigger(ln.special) and ln.index not in visited]
         for ln in lines:
@@ -681,6 +684,7 @@ class Level:
         goals, goal_kind, goal_lines = self._exit_goals(g)
         self.blockers = []
         self._banned = set()
+        self._goal_pts = []
         stage = 0
         for stage in range(7):
             strict = self._solve(goals, keys, opened, False)
@@ -729,6 +733,8 @@ class Level:
                 _, mx, my = self.line_distance(px, py, ln)
             else:
                 mx, my = px, py
+                if self._goal_pts:
+                    mx, my = min(self._goal_pts, key=lambda q: math.hypot(q[0] - px, q[1] - py))
             via = {"exit": "exit", "switch": "walk" if ln is not None and ln.special not in SWITCHES else "switch",
                    "pickup": "portal", "kill": "portal"}[goal_kind]
             return {"via": via, "remaining": remaining, "point": (mx, my), "goal": goal_kind, "line": ln}
@@ -807,8 +813,17 @@ class Level:
             ln = min(ex, key=lambda e: math.hypot((e.x1 + e.x2) / 2 - px, (e.y1 + e.y2) / 2 - py))
             mx, my = (ln.x1 + ln.x2) / 2, (ln.y1 + ln.y2) / 2
             eb, ed = self.bearing(px, py, facing_deg, mx, my), math.hypot(mx - px, my - py)
+        names = {1: "blue", 2: "yellow", 3: "red"}
+        pickups = []
+        for t in self.things:
+            k = KEY_THINGS.get(t[3])
+            if k and k not in keys and (t[0], t[1]) not in self.taken:
+                pickups.append({"type": "key", "distance": math.hypot(t[0] - px, t[1] - py),
+                                "bearing": self.bearing(px, py, facing_deg, t[0], t[1])})
+        pickups.sort(key=lambda q: q["distance"])
         return {
-            "walls": walls, "keys": [], "interactables": [i for _, _, i in near[:6]],
+            "walls": walls, "keys": [names[k] for k in sorted(keys)], "pickups": pickups[:16],
+            "interactables": [i for _, _, i in near[:6]],
             "use_target": use_target, "route": route, "exit_bearing": eb, "exit_distance": ed,
         }
 
@@ -828,7 +843,7 @@ class Level:
                 return True
         return False
 
-    def use(self, px: float, py: float, facing_deg: float) -> str | None:
+    def use(self, px: float, py: float, facing_deg: float, keys=None) -> str | None:
         """Press use. Returns 'exit' when the level is cleared."""
         _, hit = self.cast_ray(px, py, math.radians(facing_deg), USE_RANGE, 1)
         if hit is None or hit.side(px, py) != 0:
@@ -836,6 +851,9 @@ class Level:
         if hit.special in EXIT_USE:
             return "exit"
         if hit.special in DOORS and hit.back is not None:
+            need = DOOR_KEY.get(hit.special, 0)
+            if keys is not None and need and need not in keys:
+                return None
             door = self.doors.get(hit.back.index)
             if door is not None:
                 door.direction = 1 if door.direction == -1 else -1
@@ -909,8 +927,10 @@ def play(level: Level, bot, max_s: float = 300.0, decision_tics: int = 8, trace=
 
     p = Player(level.start[0], level.start[1], level.start[2])
     tic, best_hops, rules = 0, 1e9, {}
+    keys: set[int] = set()
+    level.taken = set()
     while tic < max_s * 35:
-        sc = level.scenery(p.x, p.y, p.angle, set())
+        sc = level.scenery(p.x, p.y, p.angle, keys)
         state = GameState(
             tic=tic, level="E1M1", seed=1,
             player={"health": 100, "armor": 0, "weapon": "pistol", "ammo": {"total": 50},
@@ -927,10 +947,15 @@ def play(level: Level, bot, max_s: float = 300.0, decision_tics: int = 8, trace=
         if trace is not None:
             trace.append((tic, round(p.x), round(p.y), round(p.angle), intent, rule))
         for i in range(decision_tics):
-            if intent == "use" and i == 0 and level.use(p.x, p.y, p.angle) == "exit":
+            if intent == "use" and i == 0 and level.use(p.x, p.y, p.angle, keys) == "exit":
                 return {"outcome": "cleared", "tic": tic, "best_hops": 0, "rules": rules}
             active = hold is None or i < hold
             step_tic(level, p, intent if active and intent not in ("use", "fire") else None)
             tic += 1
+            for t in level.things:
+                k = KEY_THINGS.get(t[3])
+                if k and k not in keys and abs(t[0] - p.x) < 36 and abs(t[1] - p.y) < 36:
+                    keys.add(k)
+                    level.taken.add((t[0], t[1]))
     return {"outcome": "timeout", "tic": tic, "best_hops": best_hops, "rules": rules,
             "at": (round(p.x), round(p.y))}
