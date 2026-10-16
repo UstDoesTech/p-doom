@@ -37,6 +37,9 @@ SWITCHES = {
     134, 135, 136, 137, 138, 139, 140,
 }
 EXIT_USE = {11, 51}
+LIFT_USE = {21, 62, 122, 123}
+TAG_DOORS = {29, 63, 103}  # a switch that opens the door sector with the same tag
+LIFT_WALK = {10, 88}
 EXIT_ANY = {11, 51, 52, 124}
 TELEPORT = {39, 97, 125, 126}
 PLAYER_TELEPORT = {39, 97}
@@ -158,6 +161,8 @@ class Level:
         start = next(t for t in things if t[3] == 1)
         self.start = (float(start[0]), float(start[1]), float(start[2]))
         self.doors: dict[int, Door] = {}
+        self.taken: set = set()
+        self.plats: dict = {}
 
     # -- the map -------------------------------------------------------------------------------
 
@@ -602,7 +607,24 @@ class Level:
                     cells.add(c)
         return cells, "kill", []
 
-    def _player_cell(self, dist, px, py):
+    def _snap_ok(self, g, ax, ay, bx, by, opened=frozenset()):
+        """Can the player at (ax, ay) walk to (bx, by) as things stand? A cell across a wall or a
+        raised or closed gate (a lift platform's edge) is not where the player is, whatever its
+        cost."""
+        for ln in self._lines_near(g, ax, ay, bx, by):
+            if not self._crosses(ax, ay, bx, by, ln):
+                continue
+            if ln.back is None or ln.flags & ML_BLOCKING:
+                return False
+            if self._door_class(ln) is not None:
+                continue
+            near, far = (ln.front, ln.back) if ln.side(ax, ay) == 0 else (ln.back, ln.front)
+            if not self.gap_open(ln) or far.floor - near.floor > STEP_HEIGHT:
+                if self._gate_tag(ln) not in opened:
+                    return False
+        return True
+
+    def _player_cell(self, dist, px, py, opened=frozenset(), lenient=False):
         g = self._g
         c = self.CELL
         ix, iy = int((px - g["ox"]) // c), int((py - g["oy"]) // c)
@@ -612,6 +634,8 @@ class Level:
                 jx, jy = ix + dx, iy + dy
                 if 0 <= jx < g["w"] and 0 <= jy < g["h"] and dist[jx][jy] < 1e29:
                     cx, cy = self._cell_xy(g, jx, jy)
+                    if not lenient and not self._snap_ok(g, px, py, cx, cy, opened):
+                        continue
                     cost = dist[jx][jy] + math.hypot(cx - px, cy - py)
                     if best is None or cost < best[0]:
                         best = (cost, jx, jy)
@@ -663,9 +687,11 @@ class Level:
                         cells.add(c)
             return (cells, "kill", []) if cells else None
         if kind == "key":
+            self._goal_pts = []
             for t in self.things:
                 if KEY_THINGS.get(t[3]) == what:
                     cells.update(self._cells_near_point(g, float(t[0]), float(t[1]), 48.0))
+                    self._goal_pts.append((float(t[0]), float(t[1])))
             return (cells, "pickup", []) if cells else None
         lines = [ln for ln in self.lines if ln.tag == what and is_trigger(ln.special) and ln.index not in visited]
         for ln in lines:
@@ -681,14 +707,24 @@ class Level:
         goals, goal_kind, goal_lines = self._exit_goals(g)
         self.blockers = []
         self._banned = set()
+        self._goal_pts = []
         stage = 0
         for stage in range(7):
             strict = self._solve(goals, keys, opened, False)
-            cell = self._player_cell(strict, px, py)
+            cell = self._player_cell(strict, px, py, opened)
+            opt = None
+            if cell is None:
+                # Not cut off by a closed gate? Then a cell across a wall will do: the grid can
+                # leave a thin pocket (a start room) disconnected.
+                opt = self._solve(goals, keys, opened, True)
+                if (self._player_cell(opt, px, py, opened) is None
+                        and self._player_cell(opt, px, py, opened, True) is not None):
+                    cell = self._player_cell(strict, px, py, opened, True)
             if cell is not None:
                 return self._follow(strict, cell, keys, opened, px, py, goal_kind, goal_lines, stage)
-            opt = self._solve(goals, keys, opened, True)
-            cell = self._player_cell(opt, px, py)
+            opt = opt or self._solve(goals, keys, opened, True)
+            cell = (self._player_cell(opt, px, py, opened)
+                    or self._player_cell(opt, px, py, opened, True))
             if cell is None:
                 self.why = f"stage {stage} {goal_kind}: player unreachable even optimistically (goals {len(goals)})"
                 return None
@@ -729,6 +765,8 @@ class Level:
                 _, mx, my = self.line_distance(px, py, ln)
             else:
                 mx, my = px, py
+                if self._goal_pts:
+                    mx, my = min(self._goal_pts, key=lambda q: math.hypot(q[0] - px, q[1] - py))
             via = {"exit": "exit", "switch": "walk" if ln is not None and ln.special not in SWITCHES else "switch",
                    "pickup": "portal", "kill": "portal"}[goal_kind]
             return {"via": via, "remaining": remaining, "point": (mx, my), "goal": goal_kind, "line": ln}
@@ -795,7 +833,7 @@ class Level:
             use_target = {"kind": kind_of(hit.special), "open": self.gap_open(hit),
                           "locked": bool(key and key not in keys)}
         route = None
-        found = self.find_route(keys, px, py, facing_deg)
+        found = self.find_route(keys, px, py, facing_deg, self.open_tags())
         if found is not None:
             mx, my = found["point"]
             route = {"bearing": self.bearing(px, py, facing_deg, mx, my),
@@ -807,8 +845,17 @@ class Level:
             ln = min(ex, key=lambda e: math.hypot((e.x1 + e.x2) / 2 - px, (e.y1 + e.y2) / 2 - py))
             mx, my = (ln.x1 + ln.x2) / 2, (ln.y1 + ln.y2) / 2
             eb, ed = self.bearing(px, py, facing_deg, mx, my), math.hypot(mx - px, my - py)
+        names = {1: "blue", 2: "yellow", 3: "red"}
+        pickups = []
+        for t in self.things:
+            k = KEY_THINGS.get(t[3])
+            if k and k not in keys and (t[0], t[1]) not in self.taken:
+                pickups.append({"type": "key", "distance": math.hypot(t[0] - px, t[1] - py),
+                                "bearing": self.bearing(px, py, facing_deg, t[0], t[1])})
+        pickups.sort(key=lambda q: q["distance"])
         return {
-            "walls": walls, "keys": [], "interactables": [i for _, _, i in near[:6]],
+            "walls": walls, "keys": [names[k] for k in sorted(keys)], "pickups": pickups[:16],
+            "interactables": [i for _, _, i in near[:6]],
             "use_target": use_target, "route": route, "exit_bearing": eb, "exit_distance": ed,
         }
 
@@ -828,14 +875,27 @@ class Level:
                 return True
         return False
 
-    def use(self, px: float, py: float, facing_deg: float) -> str | None:
+    def use(self, px: float, py: float, facing_deg: float, keys=None) -> str | None:
         """Press use. Returns 'exit' when the level is cleared."""
         _, hit = self.cast_ray(px, py, math.radians(facing_deg), USE_RANGE, 1)
         if hit is None or hit.side(px, py) != 0:
             return None
         if hit.special in EXIT_USE:
             return "exit"
+        if hit.special in LIFT_USE:
+            self.start_plat(hit.tag)
+        if hit.special in TAG_DOORS and hit.tag:
+            for sec in self.sectors:
+                if sec.tag == hit.tag and sec.index not in self.doors:
+                    around = [n.ceil for ln in sec.lines for n in (ln.front, ln.back)
+                              if n is not None and n is not sec]
+                    door = Door(sec, 1, min(around, default=sec.ceil) - 4)
+                    door.stay = hit.special == 103  # open and stay: 29 and 63 close again
+                    self.doors[sec.index] = door
         if hit.special in DOORS and hit.back is not None:
+            need = DOOR_KEY.get(hit.special, 0)
+            if keys is not None and need and need not in keys:
+                return None
             door = self.doors.get(hit.back.index)
             if door is not None:
                 door.direction = 1 if door.direction == -1 else -1
@@ -844,13 +904,50 @@ class Level:
                 self.doors[hit.back.index] = Door(hit.back, 1, top)
         return None
 
+    # -- lifts: down, wait, back up. Walk-over (10, 88) and switch (21, 62, 122, 123) triggers. -----
+
+    def start_plat(self, tag: int) -> None:
+        for sec in self.sectors:
+            if sec.tag != tag or tag == 0 or sec.index in self.plats:
+                continue
+            around = [n.floor for ln in sec.lines for n in (ln.front, ln.back)
+                      if n is not None and n is not sec]
+            low = min(around, default=sec.floor)
+            if low < sec.floor:
+                self.plats[sec.index] = {"sec": sec, "phase": "down", "low": low,
+                                         "high": sec.floor, "wait": 0}
+
+    def tick_plats(self) -> None:
+        for idx, pl in list(self.plats.items()):
+            sec = pl["sec"]
+            if pl["phase"] == "down":
+                sec.floor = max(pl["low"], sec.floor - 4)
+                if sec.floor <= pl["low"]:
+                    pl["phase"], pl["wait"] = "wait", 105
+            elif pl["phase"] == "wait":
+                pl["wait"] -= 1
+                if pl["wait"] <= 0:
+                    pl["phase"] = "up"
+            else:
+                sec.floor = min(pl["high"], sec.floor + 4)
+                if sec.floor >= pl["high"]:
+                    del self.plats[idx]
+
+    def open_tags(self) -> frozenset:
+        tags = {pl["sec"].tag for pl in self.plats.values()
+                if pl["sec"].floor <= pl["low"] + STEP_HEIGHT}
+        tags |= {d.sector.tag for d in self.doors.values()
+                 if d.sector.tag and d.sector.ceil - d.sector.floor >= 56}
+        return frozenset(tags)
+
     def tick_doors(self) -> None:
+        self.tick_plats()
         for idx, door in list(self.doors.items()):
             s = door.sector
             if door.direction == 1:
                 s.ceil = min(door.top, s.ceil + 2)
                 if s.ceil >= door.top:
-                    door.direction, door.wait = 0, 150
+                    door.direction, door.wait = 0, (10**9 if getattr(door, "stay", False) else 150)
             elif door.direction == 0:
                 door.wait -= 1
                 if door.wait <= 0:
@@ -909,8 +1006,11 @@ def play(level: Level, bot, max_s: float = 300.0, decision_tics: int = 8, trace=
 
     p = Player(level.start[0], level.start[1], level.start[2])
     tic, best_hops, rules = 0, 1e9, {}
+    keys: set[int] = set()
+    level.taken = set()
+    level.plats = {}
     while tic < max_s * 35:
-        sc = level.scenery(p.x, p.y, p.angle, set())
+        sc = level.scenery(p.x, p.y, p.angle, keys)
         state = GameState(
             tic=tic, level="E1M1", seed=1,
             player={"health": 100, "armor": 0, "weapon": "pistol", "ammo": {"total": 50},
@@ -927,10 +1027,20 @@ def play(level: Level, bot, max_s: float = 300.0, decision_tics: int = 8, trace=
         if trace is not None:
             trace.append((tic, round(p.x), round(p.y), round(p.angle), intent, rule))
         for i in range(decision_tics):
-            if intent == "use" and i == 0 and level.use(p.x, p.y, p.angle) == "exit":
+            if intent == "use" and i == 0 and level.use(p.x, p.y, p.angle, keys) == "exit":
                 return {"outcome": "cleared", "tic": tic, "best_hops": 0, "rules": rules}
             active = hold is None or i < hold
+            ox, oy = p.x, p.y
             step_tic(level, p, intent if active and intent not in ("use", "fire") else None)
             tic += 1
+            if (ox, oy) != (p.x, p.y):
+                for ln in level.lines:
+                    if ln.special in LIFT_WALK and level._crosses(ox, oy, p.x, p.y, ln):
+                        level.start_plat(ln.tag)
+            for t in level.things:
+                k = KEY_THINGS.get(t[3])
+                if k and k not in keys and abs(t[0] - p.x) < 36 and abs(t[1] - p.y) < 36:
+                    keys.add(k)
+                    level.taken.add((t[0], t[1]))
     return {"outcome": "timeout", "tic": tic, "best_hops": best_hops, "rules": rules,
             "at": (round(p.x), round(p.y))}

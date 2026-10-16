@@ -66,3 +66,14 @@ def test_every_level_has_a_route_from_the_start(name):
     stages = _plan_chain(level)
     assert None not in stages, (name, stages)
     assert stages[-1] in ("exit", "kill")
+
+
+def test_rule_bot_clears_e1m2_through_key_lift_switch_and_exit():
+    """E1M2 needs the red key, a lift (walk-over trigger), a switch that opens a door, then the
+    exit. The bot used to circle on the lift platform: the planner snapped it to a cell in the
+    hall below, across a ceiling too low to enter."""
+    import navsim
+
+    level = navsim.Level(WAD, "E1M2")
+    result = navsim.play(level, RuleBot(), max_s=150)
+    assert result["outcome"] == "cleared", result
