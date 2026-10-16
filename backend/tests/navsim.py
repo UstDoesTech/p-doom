@@ -559,9 +559,9 @@ class Level:
             cells.update(self._cells_near_line(g, ln, 40.0))
         if cells:
             return cells, "exit", plain or exits
-        # no exit line (E1M8): the level ends when the Barons die
+        # no exit line (last map of an episode): it ends when the boss dies
         for t in self.things:
-            if t[3] == 3003:
+            if t[3] in (3003, 16, 7):
                 c = self._nearest_walkable(g, float(t[0]), float(t[1]))
                 if c:
                     cells.add(c)

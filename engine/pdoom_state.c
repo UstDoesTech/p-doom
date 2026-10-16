@@ -43,7 +43,7 @@
 #define MAX_LISTED 16
 #define OUT_SIZE 16384
 #define MAX_SECTORS 1024
-#define MAX_LINES 2048
+#define MAX_LINES 4096
 #define INF_COST 1e30
 #define MAX_INTERACT 6
 #define RAY_MAX 512.0
@@ -365,7 +365,7 @@ static const char *WALL_NAMES[8] = {"ahead",  "ahead_right", "right",      "behi
  */
 
 #define CELL 32.0
-#define MAX_CELLS 200000
+#define MAX_CELLS 320000
 #define WALK_RADIUS 14.0
 #define DOOR_RADIUS 9.0
 #define MAX_HOPS 16000
@@ -1066,7 +1066,8 @@ static void goals_exit(void)
             if (g_nglines < 48) g_glines[g_nglines++] = e;
         }
     if (g_ngoal > 0) return;
-    /* no exit line (E1M8): the level ends when the Barons die */
+    /* no exit line (the last map of each episode): it ends when the boss dies. Barons on E1M8,
+     * the Cyberdemon on E2M8 and E4M6, the Spider Mastermind on E3M8 and E4M8. */
     g_goal_kind = GOAL_KILL;
     {
         thinker_t *th;
@@ -1074,7 +1075,7 @@ static void goals_exit(void)
             mobj_t *m;
             if (th->function.acp1 != (actionf_p1)P_MobjThinker) continue;
             m = (mobj_t *)th;
-            if (m->type != MT_BRUISER || m->health <= 0) continue;
+            if ((m->type != MT_BRUISER && m->type != MT_CYBORG && m->type != MT_SPIDER) || m->health <= 0) continue;
             add_goal(nearest_walkable((double)m->x / 65536.0, (double)m->y / 65536.0));
             if (g_ngpts < 16) {
                 g_gpts[g_ngpts][0] = (double)m->x / 65536.0;
@@ -1143,7 +1144,7 @@ static unsigned int plan_signature(int keys, int now)
             if (th->function.acp1 != (actionf_p1)P_MobjThinker) continue;
             m = (mobj_t *)th;
             if ((m->flags & MF_SPECIAL) && key_of_sprite(m->sprite)) h = (h ^ (unsigned int)(m->x >> 16)) * 16777619u;
-            if (m->type == MT_BRUISER && m->health > 0) h = (h ^ (unsigned int)(now / 35)) * 16777619u;
+            if ((m->type == MT_BRUISER || m->type == MT_CYBORG || m->type == MT_SPIDER) && m->health > 0) h = (h ^ (unsigned int)(now / 35)) * 16777619u;
         }
     }
     return h;
