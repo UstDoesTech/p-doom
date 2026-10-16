@@ -313,3 +313,40 @@ def test_does_not_override_while_an_enemy_is_in_sight():
         s.enemies = [Enemy(type="imp", distance=300, bearing=0, line_of_sight=True)]
         d = bot.decide(s)
         assert d.intent == Intent.advance
+
+
+def test_unsticks_when_it_jiggles_in_place_against_a_barrel():
+    """Session c276eef0: every advance slid a few units along the barrel, which looked like
+    progress step by step, and the player sat at (1327, -3290) for fifteen minutes."""
+    from pdoom.players.ai_decide import AiDecidePlayer
+
+    script = iter([Intent.advance, Intent.turn_left, Intent.advance, Intent.turn_right] * 20)
+
+    class Jiggle(AiDecidePlayer):
+        def _decide(self, state):
+            return Decision(intent=next(script), hold_tics=3, raw_output={})
+
+    bot = Jiggle(sql=FakeSql(None))
+    seen = []
+    for i in range(14):
+        x = 1320 + (8 if i % 2 else 0)  # 8 units back and forth: beats the per-step check (6)
+        d = bot.decide(_at(100 + i * 80, x, -3290))
+        seen.append(d)
+    overridden = [d for d in seen if "unstick" in (d.raw_output.get("assist") or {})]
+    assert overridden, "never took over from the model"
+    assert overridden[0].raw_output["assist"]["unstick"]["jam"] is True
+    assert any(d.intent in (Intent.strafe_left, Intent.strafe_right) for d in overridden)
+
+
+def test_jam_clears_when_the_player_gets_away():
+    from pdoom.players.ai_decide import AiDecidePlayer
+
+    class Fixed(AiDecidePlayer):
+        def _decide(self, state):
+            return _model(Intent.advance)
+
+    bot = Fixed(sql=FakeSql(None))
+    for i in range(6):
+        bot.decide(_at(100 + i * 80, 500, 500))
+    free = bot.decide(_at(700, 500, 700))  # 200 units away
+    assert "unstick" not in (free.raw_output.get("assist") or {})
