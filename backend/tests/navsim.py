@@ -607,7 +607,7 @@ class Level:
                     cells.add(c)
         return cells, "kill", []
 
-    def _snap_ok(self, g, ax, ay, bx, by):
+    def _snap_ok(self, g, ax, ay, bx, by, opened=frozenset()):
         """Can the player at (ax, ay) walk to (bx, by) as things stand? A cell on the far side of
         a wall, or of a raised or closed gate, is not where the player is, whatever its cost."""
         for ln in self._lines_near(g, ax, ay, bx, by):
@@ -619,10 +619,11 @@ class Level:
                 continue
             near, far = (ln.front, ln.back) if ln.side(ax, ay) == 0 else (ln.back, ln.front)
             if not self.gap_open(ln) or far.floor - near.floor > STEP_HEIGHT:
-                return False
+                if self._gate_tag(ln) not in opened:
+                    return False
         return True
 
-    def _player_cell(self, dist, px, py):
+    def _player_cell(self, dist, px, py, opened=frozenset()):
         g = self._g
         c = self.CELL
         ix, iy = int((px - g["ox"]) // c), int((py - g["oy"]) // c)
@@ -632,7 +633,7 @@ class Level:
                 jx, jy = ix + dx, iy + dy
                 if 0 <= jx < g["w"] and 0 <= jy < g["h"] and dist[jx][jy] < 1e29:
                     cx, cy = self._cell_xy(g, jx, jy)
-                    if not self._snap_ok(g, px, py, cx, cy):
+                    if not self._snap_ok(g, px, py, cx, cy, opened):
                         continue
                     cost = dist[jx][jy] + math.hypot(cx - px, cy - py)
                     if best is None or cost < best[0]:
@@ -709,11 +710,11 @@ class Level:
         stage = 0
         for stage in range(7):
             strict = self._solve(goals, keys, opened, False)
-            cell = self._player_cell(strict, px, py)
+            cell = self._player_cell(strict, px, py, opened)
             if cell is not None:
                 return self._follow(strict, cell, keys, opened, px, py, goal_kind, goal_lines, stage)
             opt = self._solve(goals, keys, opened, True)
-            cell = self._player_cell(opt, px, py)
+            cell = self._player_cell(opt, px, py, opened)
             if cell is None:
                 self.why = f"stage {stage} {goal_kind}: player unreachable even optimistically (goals {len(goals)})"
                 return None
