@@ -44,6 +44,7 @@ TURN_FAST_DEG = 3.5
 WALK_PER_TIC = 7.0  # map units walked per tic, a little under the real speed
 MAX_HOLD = 30
 DOOR_WAIT_TICS = 70  # leave a door alone after pressing use: pressing again closes it
+SWITCH_WAIT_TICS = 105  # and a switch: most are one-shot, a few toggle
 SKIP_PICKUP_TICS = 280  # ignore pickups this long after getting stuck on the way to one
 WALL_CLOSE = 48.0  # something this near dead ahead: do not walk at it
 CLEAR_AHEAD = 96.0  # room needed along a heading before the bot commits to walking it
@@ -100,6 +101,7 @@ class Memory:
     search: int = 0
     flip: bool = False
     door_until: int = -1  # game tic until which a door just pressed is left alone
+    switch_until: int = -1  # the same for a switch: pressing a lift switch twice undoes it
     skip_until: int = -1  # game tic until which pickups are ignored
     detour: float | None = None  # a world heading chosen to get round an obstacle
     detour_until: int = -1
@@ -262,6 +264,15 @@ class RuleBot:
         if target is not None and not target.locked:
             if target.kind == "exit":
                 return Intent.use, "press_exit", None
+            if (
+                target.kind == "switch"
+                and route is not None
+                and route.via == "switch"
+                and state.tic >= mem.switch_until
+            ):
+                # The route is waiting on this switch (a lift, a bridge, stairs, a far door).
+                mem.switch_until = state.tic + SWITCH_WAIT_TICS
+                return Intent.use, "press_switch", None
             if target.kind == "door" and not target.open and state.tic >= mem.door_until:
                 # Only a door on the way, or any door when nothing says where to go.
                 if route is None or route.via == "door" or abs(route.bearing) < 70:
@@ -278,6 +289,8 @@ class RuleBot:
             bearing, distance = route.bearing, route.distance
             if route.via in ("door", "exit"):
                 distance = max(distance - 40.0, 8.0)  # stop at the door, not in it
+            elif route.via == "switch":
+                distance = max(distance - 28.0, 8.0)  # stop within reach of the switch
         else:
             bearing, distance = state.exit_bearing, 9999.0
         return self._go(state, mem, rule, bearing, distance, trusted=route is not None)

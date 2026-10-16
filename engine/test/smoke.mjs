@@ -164,6 +164,27 @@ try {
   check("level_after_restart", r2.level === "E1M1" && r2.player.health === 100);
 
 
+  // 5b. Every level has a route from its start, and asking for it is quick enough to do every
+  // decision. A level the planner cannot solve reports null.
+  const perLevel = {};
+  for (let m = 1; m <= 9; m++) {
+    await call("pdoom_new_game", [1, m, 1]);
+    await sleep(1500);
+    let s;
+    for (let i = 0; i < 40; i++) {
+      s = await state();
+      if (s.player && s.level === `E1M${m}` && s.tic >= 1) break;
+      await sleep(250);
+    }
+    const t0 = Date.now();
+    const again = await state();
+    perLevel[`E1M${m}`] = s.route
+      ? { via: s.route.via, remaining: s.route.remaining, ms: Date.now() - t0, again: !!again.route }
+      : null;
+  }
+  report.checks.route_per_level = perLevel;
+  check("route_on_every_level", Object.values(perLevel).every((r) => r !== null), perLevel);
+
   // 6. Follow the route like a minimal bot: turn to the route bearing, walk, press use at a door
   // or the exit. Shows the route leads somewhere and that use does what use_target says.
   await call("pdoom_new_game", [1, 1, 7]);

@@ -255,3 +255,21 @@ def test_gives_up_chasing_a_pickup_it_never_collects():
         seen.append(d.raw_output["rule"])
     assert seen[0].endswith("armor")
     assert not seen[-1].endswith("armor")
+
+
+def test_presses_a_switch_the_route_is_waiting_on_once():
+    bot = RuleBot()
+    route = Route(bearing=0.0, distance=30, via="switch")
+    sw = UseTarget(kind="switch")
+    first = bot.decide(scene(tic=1, route=route, use_target=sw))
+    assert (first.intent, first.raw_output["rule"]) == (Intent.use, "press_switch")
+    # A second press would undo a toggle switch: carry on along the route instead.
+    second = bot.decide(scene(tic=20, route=route, use_target=sw))
+    assert second.raw_output["rule"] != "press_switch"
+
+
+def test_ignores_a_switch_that_is_not_on_the_route():
+    s = scene(
+        route=Route(bearing=0.0, distance=200, via="portal"), use_target=UseTarget(kind="switch")
+    )
+    assert RuleBot().decide(s).raw_output["rule"] != "press_switch"

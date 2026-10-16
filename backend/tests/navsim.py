@@ -695,7 +695,7 @@ class Level:
                 jump_at = i
                 break
             if info[0] >= 4:
-                door_at = i
+                door_at = i + 1  # the cell across the door
                 break
         stop = door_at if door_at is not None else jump_at
         if jump_at is not None:

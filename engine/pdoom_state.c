@@ -23,6 +23,7 @@
 
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <emscripten.h>
@@ -345,25 +346,75 @@ static const char *WALL_NAMES[8] = {"ahead",  "ahead_right", "right",      "behi
  * The map is laid over a grid of 32-unit cells. A cell is walkable if no wall, closed window or
  * high step is within a player's radius of its centre. A step between neighbouring cells is allowed
  * unless it crosses something that blocks walking; crossing a door costs extra and needs the key
- * for a key door. A cheapest-path field is solved outwards from the exit switch for the keys held
- * (and cached until they change), and the player follows it downhill to the furthest cell it can
- * see in a straight line, stopping at the first door. Unlike a graph of sectors this does not flip
- * between two openings into the same room, and it finds a way round pits and pillars.
+ * for a key door. A cheapest-path field is solved outwards from a goal and the player follows it
+ * downhill to the furthest cell it can see in a straight line, stopping at the first door. Unlike
+ * a graph of sectors this does not flip between two openings into the same room, and it finds a
+ * way round pits and pillars.
+ *
+ * Most levels cannot be finished by walking and opening doors: there are keys to fetch, lifts and
+ * bridges that a switch or a walk-over line moves, stairs that a line builds, and teleporters. A
+ * step across a sector a trigger line moves (a closed door, a raised floor, a lowered lift) is
+ * "gated". The plan works in stages. It solves the field from the exit with what is open now. If
+ * the player is cut off it solves again assuming every key and every gate is available, follows
+ * the cheapest such path from the player, and takes the first thing that blocks it: a key colour
+ * becomes the goal "fetch that key", a gate tag the goal "reach a trigger line for that tag". It
+ * repeats from the new goal (with the thing it is working on forbidden, so it cannot chase its
+ * own tail) until the player can reach the goal, and heads there. Nothing is remembered between
+ * calls except which triggers were already tried, so as keys are taken and lifts move the plan
+ * moves on by itself. tools/navsim.py keeps the same planner in Python for offline tests.
  */
 
 #define CELL 32.0
 #define MAX_CELLS 200000
 #define WALK_RADIUS 14.0
+#define DOOR_RADIUS 9.0
+#define MAX_HOPS 16000
+#define MAX_JUMPS 256
+#define MAX_GOALS 6000
+#define MAX_TAGS 1024
+#define MAX_GATES 1024
+#define GATE_TABLE 32768
+#define KEY_COST 300
+#define GATE_COST 150
+#define JUMP_COST 100
+#define GATED 0x10
 
-static int g_w = 0, g_h = 0, g_ok = 0, g_lines = 0, g_field_keys = -1;
+typedef struct { int a, b; short len; unsigned char kind; short gate[2]; } hop_t;
+typedef struct { int src, dst; short line; } jump_t;
+typedef struct { int key; short line[2]; } gate_entry_t;
+
+static int g_w = 0, g_h = 0, g_ok = 0, g_lines = 0, g_nhops = 0, g_njumps = 0, g_ngates = 0;
 static double g_ox = 0.0, g_oy = 0.0;
 static unsigned char g_walk[MAX_CELLS];
-static unsigned char g_edge[MAX_CELLS][8]; /* 255 blocked, 0 free, 4 door, 5..7 key door (4 + key) */
+static unsigned char g_edge[MAX_CELLS][8]; /* 255 blocked, else 0 free / 4 door / 5..7 key door (4 + key), | GATED */
+static unsigned char g_flag[MAX_CELLS];    /* 1 hop source, 2 hop target, 4 jump target */
 static int g_dist[MAX_CELLS];
 static int g_queue[MAX_CELLS + 1];
 static unsigned char g_inq[MAX_CELLS];
+static hop_t g_hops[MAX_HOPS];
+static jump_t g_jumps[MAX_JUMPS];
+static gate_entry_t g_gate_tab[GATE_TABLE];  /* the lines gating a grid edge, keyed by cell * 8 + direction + 1 */
+static unsigned char g_trig_tag[MAX_TAGS];   /* a trigger line moves sectors with this tag */
+static unsigned char g_live_tag[MAX_TAGS];   /* ... and one of them has not been used up */
+static short g_stair[MAX_SECTORS];           /* tag of the build-stairs trigger that raises this sector */
+static short g_gate_lines[MAX_GATES];        /* lines a trigger has to open before they can be crossed */
+static unsigned char g_line_open[MAX_GATES][2];
+static int g_vis_until[MAX_LINES];           /* a trigger line tried recently is skipped until this tic */
+static unsigned char g_ban_key[4], g_ban_tag[MAX_TAGS];
 static const int DX[8] = {1, 1, 0, -1, -1, -1, 0, 1};
 static const int DY[8] = {0, 1, 1, 1, 0, -1, -1, -1};
+
+static int g_goal[MAX_GOALS], g_ngoal = 0;
+static const line_t *g_glines[48];
+static int g_nglines = 0;
+static double g_gpts[16][2];
+static int g_ngpts = 0;
+static enum { GOAL_EXIT = 0, GOAL_TRIGGER, GOAL_PICKUP, GOAL_KILL } g_goal_kind = GOAL_EXIT;
+static unsigned int g_plan_sig = 0;
+static int g_plan_valid = 0, g_plan_goal = 0, g_plan_nglines = 0, g_at_goal_since = -1, g_at_goal_line = -1;
+static const line_t *g_plan_glines[48];
+static double g_plan_gpts[16][2];
+static int g_plan_ngpts = 0;
 
 static double lx1(const line_t *l) { return (double)l->v1->x / 65536.0; }
 static double ly1(const line_t *l) { return (double)l->v1->y / 65536.0; }
@@ -371,6 +422,22 @@ static double lx2(const line_t *l) { return (double)l->v2->x / 65536.0; }
 static double ly2(const line_t *l) { return (double)l->v2->y / 65536.0; }
 static double hypot2(double ax, double ay, double bx, double by) { return sqrt((ax - bx) * (ax - bx) + (ay - by) * (ay - by)); }
 static int is_exit_line(const line_t *l) { return l->special == 11 || l->special == 51 || l->special == 52 || l->special == 124; }
+
+/* A line special that moves a tagged sector: doors, floors, lifts, stairs. Not lights, teleports
+ * or exits. */
+static int is_trigger(int sp)
+{
+    switch (sp) {
+    case 0: case 11: case 51: case 52: case 124: case 48: case 39: case 97:
+    case 12: case 13: case 17: case 35: case 79: case 80: case 81: case 104: case 138: case 139:
+    case 156: case 157: case 158: case 159: case 169: case 170: case 171: case 172: case 173:
+    case 174: case 175: case 176: case 177: case 178: case 179: case 180:
+        return 0;
+    default: return 1;
+    }
+}
+
+static int is_stairs(int sp) { return sp == 7 || sp == 8 || sp == 100 || sp == 127; }
 
 static double seg_distance(double px, double py, const line_t *l, double *cx, double *cy)
 {
@@ -388,6 +455,38 @@ static fixed_t to_fixed(double v) { return (fixed_t)(v * 65536.0); }
 static const sector_t *sector_at(double x, double y) { return R_PointInSubsector(to_fixed(x), to_fixed(y))->sector; }
 static double cell_x(int ix) { return g_ox + (ix + 0.5) * CELL; }
 static double cell_y(int iy) { return g_oy + (iy + 0.5) * CELL; }
+static int side_of(const line_t *l, double x, double y) { return P_PointOnLineSide(to_fixed(x), to_fixed(y), (line_t *)l); }
+
+/* The tag of the sector a trigger would have to move to make this line passable, or 0. */
+static int gate_tag(const line_t *l)
+{
+    const sector_t *s[2];
+    int k;
+    s[0] = l->frontsector;
+    s[1] = l->backsector;
+    for (k = 0; k < 2; k++) {
+        int idx;
+        if (s[k] == NULL) continue;
+        if (s[k]->tag > 0 && s[k]->tag < MAX_TAGS && g_trig_tag[s[k]->tag]) return s[k]->tag;
+        idx = (int)(s[k] - sectors);
+        if (idx >= 0 && idx < MAX_SECTORS && g_stair[idx]) return g_stair[idx];
+    }
+    return 0;
+}
+
+/* Is a two-sided line shut to walking as it stands (closed gap or too high a step either way)? */
+static int shut_either_way(const line_t *l)
+{
+    if (!gap_open(l)) return 1;
+    return abs(l->frontsector->floorheight - l->backsector->floorheight) > STEP_HEIGHT;
+}
+
+static int is_gate_line(const line_t *l)
+{
+    if (l->backsector == NULL || (l->flags & ML_BLOCKING)) return 0;
+    if (is_door(l->special)) return 1;
+    return shut_either_way(l) && gate_tag(l) != 0;
+}
 
 /* Does the segment of this line touch the square of half-width h around (x, y)? Doom's player is a
  * square 32 units wide for collision, so its corners catch on wall ends a circle would clear. */
@@ -417,29 +516,41 @@ static int line_touches_box(const line_t *l, double x, double y, double h)
 
 static int cell_walkable(double x, double y)
 {
-    double z = (double)sector_at(x, y)->floorheight / 65536.0;
+    double z = (double)sector_at(x, y)->floorheight / 65536.0, box = WALK_RADIUS;
     int i;
+    /* a throat beside a door or a trigger-moved sector may be too tight for the full box */
+    for (i = 0; i < g_ngates; i++) {
+        double cx, cy;
+        if (seg_distance(x, y, &lines[g_gate_lines[i]], &cx, &cy) < 40.0) {
+            box = DOOR_RADIUS;
+            break;
+        }
+    }
     for (i = 0; i < numlines; i++) {
         const line_t *l = &lines[i];
         double hi;
-        if (fmin(lx1(l), lx2(l)) > x + WALK_RADIUS || fmax(lx1(l), lx2(l)) < x - WALK_RADIUS ||
-            fmin(ly1(l), ly2(l)) > y + WALK_RADIUS || fmax(ly1(l), ly2(l)) < y - WALK_RADIUS)
+        if (fmin(lx1(l), lx2(l)) > x + box || fmax(lx1(l), lx2(l)) < x - box ||
+            fmin(ly1(l), ly2(l)) > y + box || fmax(ly1(l), ly2(l)) < y - box)
             continue;
-        if (!line_touches_box(l, x, y, WALK_RADIUS)) continue;
+        if (!line_touches_box(l, x, y, box)) continue;
         if (l->backsector == NULL || (l->flags & ML_BLOCKING)) return 0;
         if (is_door(l->special)) continue;
-        if (!gap_open(l)) return 0;
         hi = (double)max_fixed(l->frontsector->floorheight, l->backsector->floorheight) / 65536.0;
-        if (hi - z > 24.0) return 0;
+        if (!gap_open(l) || hi - z > 24.0) {
+            if (gate_tag(l) == 0) return 0;
+        }
     }
     return 1;
 }
 
-/* 255 if the step between two cell centres is blocked, else the kind of door it crosses (0 none). */
-static int edge_kind(double ax, double ay, double bx, double by)
+/* 255 if the step between two cell centres can never be made, else the kind of door it crosses
+ * (0 none, 4 plain, 5..7 key door), with GATED set when a trigger has to move something first.
+ * gates receives up to two of the gating lines. */
+static int edge_info(double ax, double ay, double bx, double by, short *gates)
 {
     double d1x = bx - ax, d1y = by - ay;
-    int i, need = 0;
+    int i, need = 0, ng = 0;
+    gates[0] = gates[1] = -1;
     for (i = 0; i < numlines; i++) {
         const line_t *l = &lines[i];
         double ex = lx2(l) - lx1(l), ey = ly2(l) - ly1(l), denom, t, u;
@@ -457,22 +568,104 @@ static int edge_kind(double ax, double ay, double bx, double by)
             if (k > need) need = k;
             continue;
         }
-        if (!gap_open(l)) return 255;
         {
-            int side = P_PointOnLineSide(to_fixed(ax), to_fixed(ay), (line_t *)l);
+            int side = side_of(l, ax, ay);
             const sector_t *near_s = side == 0 ? l->frontsector : l->backsector;
             const sector_t *far_s = side == 0 ? l->backsector : l->frontsector;
-            if (far_s->floorheight - near_s->floorheight > STEP_HEIGHT) return 255;
+            if (!gap_open(l) || far_s->floorheight - near_s->floorheight > STEP_HEIGHT) {
+                if (gate_tag(l) == 0) return 255;
+                if (ng < 2) gates[ng++] = (short)i;
+            }
         }
     }
-    return need;
+    return need | (ng ? GATED : 0);
+}
+
+static int g_gate_count = 0;
+
+static int gate_put(int key, const short *gates)
+{
+    unsigned int h = ((unsigned int)key * 2654435761u) % GATE_TABLE;
+    if (g_gate_count >= GATE_TABLE - GATE_TABLE / 8) return 0; /* full: treat the step as blocked */
+    g_gate_count++;
+    while (g_gate_tab[h].key != 0) h = (h + 1) % GATE_TABLE;
+    g_gate_tab[h].key = key;
+    g_gate_tab[h].line[0] = gates[0];
+    g_gate_tab[h].line[1] = gates[1];
+    return 1;
+}
+
+static const gate_entry_t *gate_get(int key)
+{
+    unsigned int h = ((unsigned int)key * 2654435761u) % GATE_TABLE;
+    while (g_gate_tab[h].key != 0) {
+        if (g_gate_tab[h].key == key) return &g_gate_tab[h];
+        h = (h + 1) % GATE_TABLE;
+    }
+    return NULL;
+}
+
+static int nearest_walkable(double x, double y)
+{
+    int ix = (int)((x - g_ox) / CELL), iy = (int)((y - g_oy) / CELL), r, dx, dy, best = -1;
+    double bd = 1e30;
+    for (r = 0; r < 4 && best < 0; r++)
+        for (dx = -r; dx <= r; dx++)
+            for (dy = -r; dy <= r; dy++) {
+                int jx = ix + dx, jy = iy + dy;
+                double d;
+                if (jx < 0 || jy < 0 || jx >= g_w || jy >= g_h || !g_walk[jy * g_w + jx]) continue;
+                d = hypot2(cell_x(jx), cell_y(jy), x, y);
+                if (d < bd) {
+                    bd = d;
+                    best = jy * g_w + jx;
+                }
+            }
+    return best;
+}
+
+static void build_tags(void)
+{
+    int i;
+    memset(g_trig_tag, 0, sizeof g_trig_tag);
+    memset(g_stair, 0, sizeof g_stair);
+    for (i = 0; i < numlines; i++)
+        if (lines[i].tag > 0 && lines[i].tag < MAX_TAGS && is_trigger(lines[i].special)) g_trig_tag[lines[i].tag] = 1;
+    /* build-stairs: only the first step is tagged, the others are the neighbours that start level */
+    for (i = 0; i < numlines; i++) {
+        int s, todo[64], nt = 0, tag = lines[i].tag;
+        if (!is_stairs(lines[i].special) || tag <= 0 || tag >= MAX_TAGS) continue;
+        for (s = 0; s < numsectors && s < MAX_SECTORS; s++)
+            if (sectors[s].tag == tag && nt < 64) {
+                g_stair[s] = (short)tag;
+                todo[nt++] = s;
+            }
+        while (nt > 0) {
+            int cur = todo[--nt], k;
+            for (k = 0; k < sectors[cur].linecount; k++) {
+                const line_t *e = sectors[cur].lines[k];
+                const sector_t *o;
+                int oi;
+                if (e->backsector == NULL) continue;
+                o = e->frontsector == &sectors[cur] ? e->backsector : e->frontsector;
+                oi = (int)(o - sectors);
+                if (oi < 0 || oi >= MAX_SECTORS || g_stair[oi] || o->floorheight != sectors[cur].floorheight) continue;
+                g_stair[oi] = (short)tag;
+                if (nt < 64) todo[nt++] = oi;
+            }
+        }
+    }
+    g_ngates = 0;
+    for (i = 0; i < numlines && g_ngates < MAX_GATES; i++)
+        if (is_gate_line(&lines[i])) g_gate_lines[g_ngates++] = (short)i;
 }
 
 static int build_grid(void)
 {
     double minx = 1e30, miny = 1e30, maxx = -1e30, maxy = -1e30;
     int i, ix, iy, d;
-    if (numlines <= 0) return 0;
+    thinker_t *th;
+    if (numlines <= 0 || numlines > MAX_LINES) return 0;
     for (i = 0; i < numlines; i++) {
         minx = fmin(minx, fmin(lx1(&lines[i]), lx2(&lines[i])));
         maxx = fmax(maxx, fmax(lx1(&lines[i]), lx2(&lines[i])));
@@ -484,19 +677,94 @@ static int build_grid(void)
     g_w = (int)((maxx - g_ox) / CELL) + 2;
     g_h = (int)((maxy - g_oy) / CELL) + 2;
     if ((long)g_w * g_h > MAX_CELLS) return 0;
+    build_tags();
+    memset(g_gate_tab, 0, sizeof g_gate_tab);
+    g_gate_count = 0;
+    memset(g_flag, 0, (size_t)g_w * g_h);
+    memset(g_vis_until, 0, sizeof g_vis_until);
+    g_nhops = g_njumps = 0;
     for (ix = 0; ix < g_w; ix++)
         for (iy = 0; iy < g_h; iy++) g_walk[iy * g_w + ix] = (unsigned char)cell_walkable(cell_x(ix), cell_y(iy));
     for (ix = 0; ix < g_w; ix++)
         for (iy = 0; iy < g_h; iy++) {
             int c = iy * g_w + ix;
             for (d = 0; d < 8; d++) {
-                int jx = ix + DX[d], jy = iy + DY[d];
+                int jx = ix + DX[d], jy = iy + DY[d], kind;
+                short gates[2];
                 g_edge[c][d] = 255;
                 if (!g_walk[c] || jx < 0 || jy < 0 || jx >= g_w || jy >= g_h || !g_walk[jy * g_w + jx]) continue;
                 if (DX[d] && DY[d] && !(g_walk[iy * g_w + jx] && g_walk[jy * g_w + ix])) continue;
-                g_edge[c][d] = (unsigned char)edge_kind(cell_x(ix), cell_y(iy), cell_x(jx), cell_y(jy));
+                kind = edge_info(cell_x(ix), cell_y(iy), cell_x(jx), cell_y(jy), gates);
+                g_edge[c][d] = (unsigned char)kind;
+                if (kind != 255 && (kind & GATED) && !gate_put(c * 8 + d + 1, gates)) g_edge[c][d] = 255;
             }
         }
+    /* a door or trigger-moved sector can be thinner than a cell, so no cell lies inside it: hop
+     * from a cell on one side to a cell on the other */
+    for (i = 0; i < g_ngates; i++) {
+        const line_t *gl = &lines[g_gate_lines[i]];
+        double mx = (lx1(gl) + lx2(gl)) / 2.0, my = (ly1(gl) + ly2(gl)) / 2.0;
+        double span = hypot2(lx1(gl), ly1(gl), lx2(gl), ly2(gl)) / 2.0 + 48.0 + CELL;
+        for (ix = (int)((mx - span - g_ox) / CELL); ix <= (int)((mx + span - g_ox) / CELL); ix++)
+            for (iy = (int)((my - span - g_oy) / CELL); iy <= (int)((my + span - g_oy) / CELL); iy++) {
+                int dx, dy, c;
+                double cx, cy;
+                if (ix < 0 || iy < 0 || ix >= g_w || iy >= g_h) continue;
+                c = iy * g_w + ix;
+                if (!g_walk[c] || (g_flag[c] & 8) || seg_distance(cell_x(ix), cell_y(iy), gl, &cx, &cy) > 48.0) continue;
+                g_flag[c] |= 8; /* each cell once, whichever gate line found it */
+                for (dx = -2; dx <= 2; dx++)
+                    for (dy = -2; dy <= 2; dy++) {
+                        int jx = ix + dx, jy = iy + dy, kind;
+                        short gates[2];
+                        if (abs(dx) < 2 && abs(dy) < 2) continue;
+                        if (jx < 0 || jy < 0 || jx >= g_w || jy >= g_h || !g_walk[jy * g_w + jx]) continue;
+                        kind = edge_info(cell_x(ix), cell_y(iy), cell_x(jx), cell_y(jy), gates);
+                        if (kind == 255 || ((kind & 7) < 4 && !(kind & GATED)) || g_nhops >= MAX_HOPS) continue;
+                        g_hops[g_nhops].a = c;
+                        g_hops[g_nhops].b = jy * g_w + jx;
+                        g_hops[g_nhops].len = (short)(hypot2(0, 0, dx, dy) * CELL);
+                        g_hops[g_nhops].kind = (unsigned char)kind;
+                        g_hops[g_nhops].gate[0] = gates[0];
+                        g_hops[g_nhops].gate[1] = gates[1];
+                        g_flag[c] |= 1;
+                        g_flag[jy * g_w + jx] |= 2;
+                        g_nhops++;
+                    }
+            }
+    }
+    /* teleporters: standing on the line sends the player to the destination */
+    for (i = 0; i < numlines; i++) {
+        const line_t *l = &lines[i];
+        double mx, my, span;
+        int dcell = -1, ix2, iy2;
+        if ((l->special != 39 && l->special != 97) || l->tag == 0) continue;
+        for (th = thinkercap.next; th != &thinkercap; th = th->next) {
+            mobj_t *m;
+            if (th->function.acp1 != (actionf_p1)P_MobjThinker) continue;
+            m = (mobj_t *)th;
+            if (m->type != MT_TELEPORTMAN || m->subsector->sector->tag != l->tag) continue;
+            dcell = nearest_walkable((double)m->x / 65536.0, (double)m->y / 65536.0);
+            break;
+        }
+        if (dcell < 0) continue;
+        mx = (lx1(l) + lx2(l)) / 2.0;
+        my = (ly1(l) + ly2(l)) / 2.0;
+        span = hypot2(lx1(l), ly1(l), lx2(l), ly2(l)) / 2.0 + 24.0 + CELL;
+        for (ix2 = (int)((mx - span - g_ox) / CELL); ix2 <= (int)((mx + span - g_ox) / CELL); ix2++)
+            for (iy2 = (int)((my - span - g_oy) / CELL); iy2 <= (int)((my + span - g_oy) / CELL); iy2++) {
+                double cx, cy;
+                int c;
+                if (ix2 < 0 || iy2 < 0 || ix2 >= g_w || iy2 >= g_h || g_njumps >= MAX_JUMPS) continue;
+                c = iy2 * g_w + ix2;
+                if (!g_walk[c] || seg_distance(cell_x(ix2), cell_y(iy2), l, &cx, &cy) > 24.0) continue;
+                g_jumps[g_njumps].src = c;
+                g_jumps[g_njumps].dst = dcell;
+                g_jumps[g_njumps].line = (short)i;
+                g_flag[dcell] |= 4;
+                g_njumps++;
+            }
+    }
     return 1;
 }
 
@@ -505,67 +773,129 @@ static int keys_mask(const player_t *p)
     return (has_key(p, 1) ? 1 : 0) | (has_key(p, 2) ? 2 : 0) | (has_key(p, 3) ? 4 : 0);
 }
 
-static int edge_open(int kind, int keys)
+/* Which trigger tags still have a line to press, and whether each gate line is crossable now. */
+static void refresh_live(void)
 {
-    if (kind == 255) return 0;
-    if (kind >= 5 && !(keys & (1 << (kind - 5)))) return 0;
-    return 1;
+    int i;
+    memset(g_live_tag, 0, sizeof g_live_tag);
+    for (i = 0; i < numlines; i++)
+        if (lines[i].tag > 0 && lines[i].tag < MAX_TAGS && is_trigger(lines[i].special)) g_live_tag[lines[i].tag] = 1;
+    for (i = 0; i < g_ngates; i++) {
+        const line_t *l = &lines[g_gate_lines[i]];
+        int tag = gate_tag(l), side;
+        for (side = 0; side < 2; side++) {
+            const sector_t *near_s = side == 0 ? l->frontsector : l->backsector;
+            const sector_t *far_s = side == 0 ? l->backsector : l->frontsector;
+            int open = gap_open(l) && far_s->floorheight - near_s->floorheight <= STEP_HEIGHT;
+            /* a trigger that was used up and left the sector moving or moved counts as open */
+            if (!open && tag && !g_live_tag[tag]) open = 1;
+            g_line_open[i][side] = (unsigned char)open;
+        }
+    }
 }
 
-static void solve_field(int keys)
+static int gate_index(int line)
+{
+    int i;
+    for (i = 0; i < g_ngates; i++)
+        if (g_gate_lines[i] == line) return i;
+    return -1;
+}
+
+/* Cost of a step of this length, or -1. optimistic: missing keys and shut gates are allowed at a
+ * price unless forbidden. *miss_key / *miss_tag report the first thing that is missing. */
+static int step_cost(int kind, int len, const short *gates, double ax, double ay, int keys, int optimistic,
+                     int *miss_key, int *miss_tag)
+{
+    int cost = len, base = kind & 7, k;
+    if (kind == 255) return -1;
+    if (base >= 4) cost += 64;
+    if (base >= 5 && !(keys & (1 << (base - 5)))) {
+        if (!optimistic || g_ban_key[base - 4]) return -1;
+        cost += KEY_COST;
+        if (miss_key && !*miss_key) *miss_key = base - 4;
+    }
+    if (kind & GATED) {
+        for (k = 0; k < 2; k++) {
+            int gi, side;
+            const line_t *l;
+            if (gates[k] < 0) continue;
+            l = &lines[gates[k]];
+            gi = gate_index(gates[k]);
+            side = side_of(l, ax, ay);
+            if (gi >= 0 && g_line_open[gi][side]) continue;
+            {
+                int tag = gate_tag(l);
+                if (!optimistic || (tag > 0 && g_ban_tag[tag])) return -1;
+                cost += GATE_COST;
+                if (miss_tag && !*miss_tag) *miss_tag = tag;
+            }
+        }
+    }
+    return cost;
+}
+
+static void relax(int to, int nd, int *tail)
+{
+    if (nd < g_dist[to]) {
+        g_dist[to] = nd;
+        if (!g_inq[to]) {
+            g_inq[to] = 1;
+            g_queue[(*tail)++] = to;
+            if (*tail > MAX_CELLS) *tail = 0;
+        }
+    }
+}
+
+/* The cheapest cost to the current goal cells from everywhere, into g_dist. */
+static void solve_field(int keys, int optimistic)
 {
     int n = g_w * g_h, i, head = 0, tail = 0;
     for (i = 0; i < n; i++) {
         g_dist[i] = 1 << 28;
         g_inq[i] = 0;
     }
-    for (i = 0; i < numlines; i++) {
-        const line_t *e = &lines[i];
-        double mx, my;
-        int ix, iy;
-        if (!is_exit_line(e) || e->frontsector == NULL) continue;
-        mx = (lx1(e) + lx2(e)) / 2.0;
-        my = (ly1(e) + ly2(e)) / 2.0;
-        for (ix = (int)((mx - 400.0 - g_ox) / CELL); ix <= (int)((mx + 400.0 - g_ox) / CELL); ix++)
-            for (iy = (int)((my - 400.0 - g_oy) / CELL); iy <= (int)((my + 400.0 - g_oy) / CELL); iy++) {
-                double x, y, cx, cy;
-                int c;
-                if (ix < 0 || iy < 0 || ix >= g_w || iy >= g_h) continue;
-                c = iy * g_w + ix;
-                if (!g_walk[c]) continue;
-                x = cell_x(ix);
-                y = cell_y(iy);
-                if (seg_distance(x, y, e, &cx, &cy) <= 40.0 &&
-                    P_PointOnLineSide(to_fixed(x), to_fixed(y), (line_t *)e) == 0 && !g_inq[c]) {
-                    g_dist[c] = 0;
-                    g_inq[c] = 1;
-                    g_queue[tail++] = c;
-                    if (tail > MAX_CELLS) tail = 0;
-                }
-            }
+    for (i = 0; i < g_ngoal; i++) {
+        int c = g_goal[i];
+        g_dist[c] = 0;
+        if (!g_inq[c]) {
+            g_inq[c] = 1;
+            g_queue[tail++] = c;
+        }
     }
     while (head != tail) {
-        int c = g_queue[head++], ix, iy, d;
+        int c = g_queue[head++], ix, iy, d, k;
         if (head > MAX_CELLS) head = 0;
         g_inq[c] = 0;
         ix = c % g_w;
         iy = c / g_w;
         for (d = 0; d < 8; d++) {
-            int jx = ix + DX[d], jy = iy + DY[d], j, kind, nd;
+            int jx = ix + DX[d], jy = iy + DY[d], j, cost, e = (d + 4) % 8;
+            short gates[2] = {-1, -1};
             if (jx < 0 || jy < 0 || jx >= g_w || jy >= g_h) continue;
             j = jy * g_w + jx;
-            kind = g_edge[j][(d + 4) % 8]; /* the step from j back to c */
-            if (!edge_open(kind, keys)) continue;
-            nd = g_dist[c] + (DX[d] && DY[d] ? 45 : 32) + (kind >= 4 && kind != 255 ? 64 : 0);
-            if (nd < g_dist[j]) {
-                g_dist[j] = nd;
-                if (!g_inq[j]) {
-                    g_inq[j] = 1;
-                    g_queue[tail++] = j;
-                    if (tail > MAX_CELLS) tail = 0;
+            if (g_edge[j][e] == 255) continue;
+            if (g_edge[j][e] & GATED) {
+                const gate_entry_t *ge = gate_get(j * 8 + e + 1);
+                if (ge) {
+                    gates[0] = ge->line[0];
+                    gates[1] = ge->line[1];
                 }
             }
+            cost = step_cost(g_edge[j][e], DX[d] && DY[d] ? 45 : 32, gates, cell_x(jx), cell_y(jy), keys, optimistic, NULL, NULL);
+            if (cost >= 0) relax(j, g_dist[c] + cost, &tail);
         }
+        if (g_flag[c] & 2)
+            for (k = 0; k < g_nhops; k++) {
+                int cost;
+                if (g_hops[k].b != c) continue;
+                cost = step_cost(g_hops[k].kind, g_hops[k].len, g_hops[k].gate, cell_x(g_hops[k].a % g_w),
+                                 cell_y(g_hops[k].a / g_w), keys, optimistic, NULL, NULL);
+                if (cost >= 0) relax(g_hops[k].a, g_dist[c] + cost, &tail);
+            }
+        if (g_flag[c] & 4)
+            for (k = 0; k < g_njumps; k++)
+                if (g_jumps[k].dst == c) relax(g_jumps[k].src, g_dist[c] + JUMP_COST, &tail);
     }
 }
 
@@ -589,27 +919,76 @@ static int clear_for_body(const mobj_t *me, double ang, double d)
     return 1;
 }
 
-/* Where to walk to reach the exit: a point on the way, whether it is a door, and what remains. */
-static int find_route(const player_t *p, const mobj_t *me, int *via_door, double *remaining,
-                      int *at_exit, double *wx, double *wy)
-{
-    double px = (double)me->x / 65536.0, py = (double)me->y / 65536.0;
-    int keys = keys_mask(p), ix, iy, dx, dy, i, best_c = -1, door_at = -1, plen = 1, target, limit;
-    int path[26];
-    double best_cost = 1e30;
+typedef struct { int cell; int how; int miss_key; int miss_tag; const line_t *jump_line; } step_t;
+enum { HOW_WALK = 0, HOW_DOOR = 1, HOW_JUMP = 2 };
 
-    if (g_ok == 0 || g_lines != numlines) {
-        g_ok = build_grid() ? 1 : 2; /* 2: too big or empty, do not try again this level */
-        g_lines = numlines;
-        g_field_keys = -1;
+/* Walk downhill on g_dist from a cell. Fills path/steps, returns the number of cells. */
+static int descend(int start, int keys, int optimistic, int max_steps, step_t *path)
+{
+    int n = 1, i;
+    path[0].cell = start;
+    path[0].how = HOW_WALK;
+    path[0].miss_key = path[0].miss_tag = 0;
+    path[0].jump_line = NULL;
+    for (i = 0; i < max_steps; i++) {
+        int c = path[n - 1].cell, cix = c % g_w, ciy = c / g_w, d, k, bestcost = 1 << 29;
+        step_t best;
+        best.cell = -1;
+        if (g_dist[c] == 0) break;
+        for (d = 0; d < 8; d++) {
+            int jx = cix + DX[d], jy = ciy + DY[d], j, cost, mk = 0, mt = 0;
+            short gates[2] = {-1, -1};
+            if (jx < 0 || jy < 0 || jx >= g_w || jy >= g_h || g_edge[c][d] == 255) continue;
+            j = jy * g_w + jx;
+            if (g_dist[j] >= g_dist[c]) continue;
+            if (g_edge[c][d] & GATED) {
+                const gate_entry_t *ge = gate_get(c * 8 + d + 1);
+                if (ge) {
+                    gates[0] = ge->line[0];
+                    gates[1] = ge->line[1];
+                }
+            }
+            cost = step_cost(g_edge[c][d], DX[d] && DY[d] ? 45 : 32, gates, cell_x(cix), cell_y(ciy), keys, optimistic, &mk, &mt);
+            if (cost < 0 || cost + g_dist[j] >= bestcost) continue;
+            bestcost = cost + g_dist[j];
+            best.cell = j;
+            best.how = (g_edge[c][d] & 7) >= 4 ? HOW_DOOR : HOW_WALK;
+            best.miss_key = mk;
+            best.miss_tag = mt;
+            best.jump_line = NULL;
+        }
+        if (g_flag[c] & 1)
+            for (k = 0; k < g_nhops; k++) {
+                int cost, mk = 0, mt = 0, j = g_hops[k].b;
+                if (g_hops[k].a != c || g_dist[j] >= g_dist[c]) continue;
+                cost = step_cost(g_hops[k].kind, g_hops[k].len, g_hops[k].gate, cell_x(cix), cell_y(ciy), keys, optimistic, &mk, &mt);
+                if (cost < 0 || cost + g_dist[j] >= bestcost) continue;
+                bestcost = cost + g_dist[j];
+                best.cell = j;
+                best.how = (g_hops[k].kind & 7) >= 4 ? HOW_DOOR : HOW_WALK;
+                best.miss_key = mk;
+                best.miss_tag = mt;
+                best.jump_line = NULL;
+            }
+        for (k = 0; k < g_njumps; k++) {
+            int j = g_jumps[k].dst;
+            if (g_jumps[k].src != c || g_dist[j] + JUMP_COST >= bestcost + 1) continue;
+            bestcost = g_dist[j] + JUMP_COST;
+            best.cell = j;
+            best.how = HOW_JUMP;
+            best.miss_key = best.miss_tag = 0;
+            best.jump_line = &lines[g_jumps[k].line];
+        }
+        if (best.cell < 0) break;
+        path[n++] = best;
     }
-    if (g_ok != 1) return 0;
-    if (g_field_keys != keys) {
-        solve_field(keys);
-        g_field_keys = keys;
-    }
-    ix = (int)((px - g_ox) / CELL);
-    iy = (int)((py - g_oy) / CELL);
+    return n;
+}
+
+static int player_cell(const mobj_t *me, double *cost_out)
+{
+    double px = (double)me->x / 65536.0, py = (double)me->y / 65536.0, best_cost = 1e30;
+    int ix = (int)((px - g_ox) / CELL), iy = (int)((py - g_oy) / CELL), dx, dy, best_c = -1;
     for (dx = -1; dx <= 1; dx++)
         for (dy = -1; dy <= 1; dy++) {
             int jx = ix + dx, jy = iy + dy, c;
@@ -623,36 +1002,223 @@ static int find_route(const player_t *p, const mobj_t *me, int *via_door, double
                 best_c = c;
             }
         }
-    if (best_c < 0) return 0;
-    *remaining = best_cost;
-    *via_door = 0;
-    *at_exit = 0;
-    if (g_dist[best_c] == 0) {
-        *at_exit = 1;
-        return 1;
+    *cost_out = best_cost;
+    return best_c;
+}
+
+static void add_goal(int c)
+{
+    int i;
+    if (c < 0) return;
+    for (i = 0; i < g_ngoal; i++)
+        if (g_goal[i] == c) return;
+    if (g_ngoal < MAX_GOALS) g_goal[g_ngoal++] = c;
+}
+
+static void goal_cells_near_line(const line_t *l, double reach, int any_side)
+{
+    double mx = (lx1(l) + lx2(l)) / 2.0, my = (ly1(l) + ly2(l)) / 2.0;
+    double span = hypot2(lx1(l), ly1(l), lx2(l), ly2(l)) / 2.0 + reach + CELL;
+    int ix, iy;
+    for (ix = (int)((mx - span - g_ox) / CELL); ix <= (int)((mx + span - g_ox) / CELL); ix++)
+        for (iy = (int)((my - span - g_oy) / CELL); iy <= (int)((my + span - g_oy) / CELL); iy++) {
+            double cx, cy;
+            if (ix < 0 || iy < 0 || ix >= g_w || iy >= g_h || !g_walk[iy * g_w + ix]) continue;
+            if (seg_distance(cell_x(ix), cell_y(iy), l, &cx, &cy) <= reach &&
+                (any_side || side_of(l, cell_x(ix), cell_y(iy)) == 0))
+                add_goal(iy * g_w + ix);
+        }
+}
+
+static void goal_cells_near_point(double x, double y, double reach)
+{
+    int ix = (int)((x - g_ox) / CELL), iy = (int)((y - g_oy) / CELL), dx, dy, before = g_ngoal;
+    for (dx = -2; dx <= 2; dx++)
+        for (dy = -2; dy <= 2; dy++) {
+            int jx = ix + dx, jy = iy + dy;
+            if (jx < 0 || jy < 0 || jx >= g_w || jy >= g_h || !g_walk[jy * g_w + jx]) continue;
+            if (fabs(cell_x(jx) - x) <= reach && fabs(cell_y(jy) - y) <= reach) add_goal(jy * g_w + jx);
+        }
+    if (g_ngoal == before) add_goal(nearest_walkable(x, y));
+}
+
+static int key_of_sprite(spritenum_t s)
+{
+    switch (s) {
+    case SPR_BKEY: case SPR_BSKU: return 1;
+    case SPR_YKEY: case SPR_YSKU: return 2;
+    case SPR_RKEY: case SPR_RSKU: return 3;
+    default: return 0;
     }
-    path[0] = best_c;
-    for (i = 0; i < 24; i++) {
-        int c = path[plen - 1], d, nxt = -1, nkind = 0, cix = c % g_w, ciy = c / g_w;
-        for (d = 0; d < 8; d++) {
-            int jx = cix + DX[d], jy = ciy + DY[d], j;
-            if (jx < 0 || jy < 0 || jx >= g_w || jy >= g_h) continue;
-            j = jy * g_w + jx;
-            if (!edge_open(g_edge[c][d], keys)) continue;
-            if (g_dist[j] < g_dist[c] && (nxt < 0 || g_dist[j] < g_dist[nxt])) {
-                nxt = j;
-                nkind = g_edge[c][d];
+}
+
+static void goals_exit(void)
+{
+    int i, pass;
+    g_ngoal = g_nglines = g_ngpts = 0;
+    g_goal_kind = GOAL_EXIT;
+    for (pass = 0; pass < 2 && g_ngoal == 0; pass++)
+        for (i = 0; i < numlines; i++) {
+            const line_t *e = &lines[i];
+            if (!is_exit_line(e) || e->frontsector == NULL) continue;
+            if (pass == 0 && e->special == 51) continue; /* the secret exit only if there is no other */
+            goal_cells_near_line(e, 40.0, 0);
+            if (g_nglines < 48) g_glines[g_nglines++] = e;
+        }
+    if (g_ngoal > 0) return;
+    /* no exit line (E1M8): the level ends when the Barons die */
+    g_goal_kind = GOAL_KILL;
+    {
+        thinker_t *th;
+        for (th = thinkercap.next; th != &thinkercap; th = th->next) {
+            mobj_t *m;
+            if (th->function.acp1 != (actionf_p1)P_MobjThinker) continue;
+            m = (mobj_t *)th;
+            if (m->type != MT_BRUISER || m->health <= 0) continue;
+            add_goal(nearest_walkable((double)m->x / 65536.0, (double)m->y / 65536.0));
+            if (g_ngpts < 16) {
+                g_gpts[g_ngpts][0] = (double)m->x / 65536.0;
+                g_gpts[g_ngpts][1] = (double)m->y / 65536.0;
+                g_ngpts++;
             }
         }
-        if (nxt < 0) break;
-        if (nkind >= 4 && nkind != 255 && door_at < 0) door_at = plen;
-        path[plen++] = nxt;
-        if (door_at >= 0 || g_dist[nxt] == 0) break;
     }
-    target = 0;
-    limit = door_at >= 0 ? door_at : plen - 1;
+}
+
+static int goals_key(int k)
+{
+    thinker_t *th;
+    g_ngoal = g_nglines = g_ngpts = 0;
+    g_goal_kind = GOAL_PICKUP;
+    for (th = thinkercap.next; th != &thinkercap; th = th->next) {
+        mobj_t *m;
+        if (th->function.acp1 != (actionf_p1)P_MobjThinker) continue;
+        m = (mobj_t *)th;
+        if (!(m->flags & MF_SPECIAL) || key_of_sprite(m->sprite) != k) continue;
+        goal_cells_near_point((double)m->x / 65536.0, (double)m->y / 65536.0, 48.0);
+        if (g_ngpts < 16) {
+            g_gpts[g_ngpts][0] = (double)m->x / 65536.0;
+            g_gpts[g_ngpts][1] = (double)m->y / 65536.0;
+            g_ngpts++;
+        }
+    }
+    return g_ngoal > 0;
+}
+
+static int goals_trigger(int tag, int now)
+{
+    int i;
+    g_ngoal = g_nglines = g_ngpts = 0;
+    g_goal_kind = GOAL_TRIGGER;
+    for (i = 0; i < numlines; i++) {
+        const line_t *l = &lines[i];
+        if (l->tag != tag || !is_trigger(l->special) || g_vis_until[i] > now) continue;
+        goal_cells_near_line(l, is_switch(l->special) ? 40.0 : 24.0, !is_switch(l->special));
+        if (g_nglines < 48) g_glines[g_nglines++] = l;
+    }
+    return g_ngoal > 0;
+}
+
+typedef struct { int via; double remaining, wx, wy; } plan_t;
+enum { VIA_PORTAL = 0, VIA_DOOR, VIA_EXIT, VIA_SWITCH, VIA_WALK };
+
+static unsigned int plan_signature(int keys, int now)
+{
+    unsigned int h = 2166136261u;
+    int i;
+    h = (h ^ (unsigned int)keys) * 16777619u;
+    for (i = 0; i < g_ngates; i++) h = (h ^ (unsigned int)(g_line_open[i][0] | (g_line_open[i][1] << 1))) * 16777619u;
+    for (i = 0; i < MAX_TAGS; i += 8) {
+        int k;
+        unsigned int b = 0;
+        for (k = 0; k < 8; k++) b |= (unsigned int)g_live_tag[i + k] << k;
+        h = (h ^ b) * 16777619u;
+    }
+    for (i = 0; i < numlines; i++)
+        if (g_vis_until[i] > now) h = (h ^ (unsigned int)i) * 16777619u;
+    {
+        thinker_t *th; /* the goals themselves: which keys and Barons are still about */
+        for (th = thinkercap.next; th != &thinkercap; th = th->next) {
+            mobj_t *m;
+            if (th->function.acp1 != (actionf_p1)P_MobjThinker) continue;
+            m = (mobj_t *)th;
+            if ((m->flags & MF_SPECIAL) && key_of_sprite(m->sprite)) h = (h ^ (unsigned int)(m->x >> 16)) * 16777619u;
+            if (m->type == MT_BRUISER && m->health > 0) h = (h ^ (unsigned int)(now / 35)) * 16777619u;
+        }
+    }
+    return h;
+}
+
+/* Where to head, given that g_dist is a strict field the player can use. */
+static int follow(const mobj_t *me, int keys, int cell, double cost, plan_t *res, int now)
+{
+    double px = (double)me->x / 65536.0, py = (double)me->y / 65536.0;
+    static step_t path[26];
+    int n, i, door_at = -1, jump_at = -1, target = 0, limit;
+    res->remaining = cost;
+    if (g_dist[cell] == 0) {
+        const line_t *nearest = NULL;
+        double best = 1e30, bx = px, by = py;
+        for (i = 0; i < g_plan_nglines; i++) {
+            double cx, cy, d = seg_distance(px, py, g_plan_glines[i], &cx, &cy);
+            if (d < best) {
+                best = d;
+                nearest = g_plan_glines[i];
+                bx = cx;
+                by = cy;
+            }
+        }
+        for (i = 0; i < g_plan_ngpts; i++) {
+            double d = hypot2(px, py, g_plan_gpts[i][0], g_plan_gpts[i][1]);
+            if (d < best) {
+                best = d;
+                nearest = NULL;
+                bx = g_plan_gpts[i][0];
+                by = g_plan_gpts[i][1];
+            }
+        }
+        res->wx = bx;
+        res->wy = by;
+        res->via = VIA_PORTAL;
+        if (g_plan_goal == GOAL_EXIT) res->via = VIA_EXIT;
+        else if (g_plan_goal == GOAL_TRIGGER && nearest != NULL) {
+            res->via = is_switch(nearest->special) ? VIA_SWITCH : VIA_WALK;
+            /* a repeatable trigger stays in the list once used: give up on it after a while */
+            if (best < 48.0) {
+                int li = (int)(nearest - lines);
+                if (g_at_goal_line != li) {
+                    g_at_goal_line = li;
+                    g_at_goal_since = now;
+                } else if (now - g_at_goal_since > 70 || (res->via == VIA_WALK && best < 12.0)) {
+                    g_vis_until[li] = now + 700;
+                    g_plan_valid = 0;
+                }
+            }
+        }
+        return 1;
+    }
+    n = descend(cell, keys, 0, 24, path);
+    for (i = 1; i < n; i++) {
+        if (path[i].how == HOW_JUMP) {
+            jump_at = i;
+            break;
+        }
+        if (path[i].how == HOW_DOOR) {
+            door_at = i;
+            break;
+        }
+    }
+    if (jump_at >= 0) {
+        double cx, cy;
+        seg_distance(px, py, path[jump_at].jump_line, &cx, &cy);
+        res->wx = cx;
+        res->wy = cy;
+        res->via = VIA_WALK;
+        return 1;
+    }
+    limit = door_at >= 0 ? door_at : n - 1; /* door_at: the cell across the door */
     for (i = 0; i <= limit; i++) {
-        double tx = cell_x(path[i] % g_w), ty = cell_y(path[i] / g_w);
+        double tx = cell_x(path[i].cell % g_w), ty = cell_y(path[i].cell / g_w);
         double d = hypot2(tx, ty, px, py);
         if (d < 1.0) {
             target = i;
@@ -663,10 +1229,70 @@ static int find_route(const player_t *p, const mobj_t *me, int *via_door, double
         else if (i > 1)
             break;
     }
-    *wx = cell_x(path[target] % g_w);
-    *wy = cell_y(path[target] / g_w);
-    *via_door = door_at >= 0 && target == door_at;
+    res->wx = cell_x(path[target].cell % g_w);
+    res->wy = cell_y(path[target].cell / g_w);
+    res->via = (door_at >= 0 && target == door_at) ? VIA_DOOR : VIA_PORTAL;
     return 1;
+}
+
+/* The next place to go. Returns 0 when no plan exists (the map has no way through). */
+static int plan_route(const player_t *p, const mobj_t *me, plan_t *res)
+{
+    int keys = keys_mask(p), now = leveltime, stage, cell;
+    double cost;
+    unsigned int sig;
+
+    if (g_ok == 0 || g_lines != numlines) {
+        g_ok = build_grid() ? 1 : 2; /* 2: too big or empty, do not try again this level */
+        g_lines = numlines;
+        g_plan_valid = 0;
+    }
+    if (g_ok != 1) return 0;
+    refresh_live();
+    sig = plan_signature(keys, now);
+    if (g_plan_valid && sig == g_plan_sig) {
+        cell = player_cell(me, &cost);
+        if (cell >= 0) return follow(me, keys, cell, cost, res, now);
+    }
+    g_plan_valid = 0;
+    memset(g_ban_key, 0, sizeof g_ban_key);
+    memset(g_ban_tag, 0, sizeof g_ban_tag);
+    goals_exit();
+    for (stage = 0; stage < 7; stage++) {
+        static step_t path[800];
+        int n, i, miss_key = 0, miss_tag = 0;
+        if (g_ngoal == 0) return 0;
+        solve_field(keys, 0);
+        cell = player_cell(me, &cost);
+        if (cell >= 0) {
+            g_plan_sig = sig;
+            g_plan_valid = 1;
+            g_plan_goal = g_goal_kind;
+            g_plan_nglines = g_nglines;
+            memcpy(g_plan_glines, g_glines, sizeof(g_glines[0]) * (size_t)g_nglines);
+            g_plan_ngpts = g_ngpts;
+            memcpy(g_plan_gpts, g_gpts, sizeof g_gpts);
+            return follow(me, keys, cell, cost, res, now);
+        }
+        solve_field(keys, 1);
+        cell = player_cell(me, &cost);
+        if (cell < 0) return 0;
+        n = descend(cell, keys, 1, 799, path);
+        for (i = 1; i < n && !miss_key && !miss_tag; i++) {
+            miss_key = path[i].miss_key;
+            miss_tag = path[i].miss_tag;
+        }
+        if (miss_key) {
+            g_ban_key[miss_key] = 1;
+            if (!goals_key(miss_key)) return 0;
+        } else if (miss_tag > 0) {
+            g_ban_tag[miss_tag] = 1;
+            if (!goals_trigger(miss_tag, now)) return 0;
+        } else {
+            return 0;
+        }
+    }
+    return 0;
 }
 
 /* Appends the scenery fields to the JSON in out. Returns the new length. */
@@ -675,8 +1301,7 @@ static int write_scenery(const player_t *p, const mobj_t *me, int n)
     near_line_t near_lines[MAX_INTERACT];
     int nn = 0, i, j, any_key = 0;
     const line_t *hit = NULL;
-    int via_door = 0, at_exit = 0;
-    double remaining = 0.0, wx = 0.0, wy = 0.0;
+    plan_t pl;
     double face_rad = (double)me->angle * 2.0 * M_PI / 4294967296.0;
 
     n += snprintf(out + n, OUT_SIZE - n, ",\"walls\":{");
@@ -739,20 +1364,11 @@ static int write_scenery(const player_t *p, const mobj_t *me, int n)
         n += snprintf(out + n, OUT_SIZE - n, ",\"use_target\":null");
     }
 
-    if (find_route(p, me, &via_door, &remaining, &at_exit, &wx, &wy)) {
-        double b = 0.0, d = 0.0;
-        const char *via = "portal";
-        if (at_exit) {
-            exit_bearing(me, &b, &d);
-            via = "exit";
-        } else {
-            b = bearing_to(me, wx, wy);
-            d = dist_to(me, wx, wy);
-            if (via_door) via = "door";
-        }
+    if (plan_route(p, me, &pl)) {
+        static const char *VIA[] = {"portal", "door", "exit", "switch", "walk"};
         n += snprintf(out + n, OUT_SIZE - n,
                       ",\"route\":{\"bearing\":%.2f,\"distance\":%.1f,\"via\":\"%s\",\"remaining\":%.0f}",
-                      b, d, via, remaining);
+                      bearing_to(me, pl.wx, pl.wy), dist_to(me, pl.wx, pl.wy), VIA[pl.via], pl.remaining);
     } else {
         n += snprintf(out + n, OUT_SIZE - n, ",\"route\":null");
     }

@@ -117,8 +117,10 @@ class UseTarget(BaseModel):
 
 
 class Route(BaseModel):
-    """The next point to head for on the way to the exit, going through doors the player can open.
-    via: portal (an opening), door, or exit (the exit switch itself)."""
+    """The next point to head for on the way to the exit. When the exit is out of reach the route
+    leads to what unlocks it: a key, a switch, or a line to walk over. via: portal (an opening, or
+    a key or Baron to walk to), door, exit (the exit switch), switch (press use here) or walk
+    (cross this line)."""
 
     bearing: float
     distance: float
