@@ -84,10 +84,20 @@ jobs:
           code=$?
           echo "::notice title=bundle deploy exit=${code}::$(printf '%s' "$out" | tail -c 1500 | tr '\n' '|')"
           exit $code
+      - name: Enable the Lakebase endpoint if it was disabled
+        run: |
+          set +e
+          ep=projects/pdoom/branches/production/endpoints/primary
+          dis=$(databricks postgres get-endpoint "$ep" -o json | jq -r '.status.disabled')
+          if [ "$dis" = true ]; then
+            out=$(databricks postgres update-endpoint "$ep" spec.disabled --json '{"spec":{"disabled":false}}' -o json 2>&1)
+            echo "::notice title=enable endpoint exit=$?::$(printf '%s' "$out" | tr '\n' '|' | cut -c1-700)"
+          fi
+          echo "::notice title=endpoint after::$(databricks postgres get-endpoint "$ep" -o json | jq -c '.status|{current_state,disabled}')"
       - name: Lakebase tables and the app's grants
         run: |
           set +e
-          for f in databricks/lakebase/*.sql; do scripts/pg.sh -q -f "$f" >/dev/null 2>"$RUNNER_TEMP/pgerr" || { echo "::error title=lakebase $f::$(tr '\n' '|' < "$RUNNER_TEMP/pgerr" | cut -c1-600)"; exit 1; }; done
+          for f in databricks/lakebase/*.sql; do scripts/pg.sh -q -f "$f" >/dev/null 2>"$RUNNER_TEMP/pgerr" || { echo "::error title=lakebase $f::$(grep -v '^::add-mask::' "$RUNNER_TEMP/pgerr" | tr '\n' '|' | cut -c1-600)"; ep=$(databricks postgres get-endpoint projects/pdoom/branches/production/endpoints/primary -o json 2>&1 | jq -c '.status | {state: .current_state, hosts: .hosts}' 2>&1); echo "::notice title=lakebase endpoint::$ep"; exit 1; }; done
           sp=$(databricks apps get "$APP_NAME" -o json | jq -r '.service_principal_client_id')
           echo "::add-mask::$sp"
           out=$(scripts/pg.sh -c "GRANT USAGE ON SCHEMA pdoom TO \"$sp\"; GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA pdoom TO \"$sp\"; ALTER DEFAULT PRIVILEGES IN SCHEMA pdoom GRANT SELECT, INSERT, UPDATE ON TABLES TO \"$sp\";" 2>&1)
@@ -109,7 +119,11 @@ jobs:
           PDOOM_UC_SCHEMA: ${{ env.SCHEMA }}
         run: |
           pip install -q .
-          python -m pdoom.setup_db --sql-dir ../databricks/sql
+          set +e
+          out=$(python -m pdoom.setup_db --sql-dir ../databricks/sql 2>&1)
+          code=$?
+          echo "::notice title=setup_db exit=${code}::$(printf '%s' "$out" | tail -c 1800 | tr '\n' '|')"
+          exit $code
       - name: Let the app's service principal into the catalog
         run: |
           sp=$(databricks apps get "$APP_NAME" -o json | jq -r '.service_principal_client_id')
