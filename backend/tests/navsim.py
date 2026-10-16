@@ -608,23 +608,23 @@ class Level:
         return cells, "kill", []
 
     def _snap_ok(self, g, ax, ay, bx, by, opened=frozenset()):
-        """Can the player at (ax, ay) walk to (bx, by) as things stand? A cell across a raised or
-        closed gate (a lift platform's edge, a lowered floor) is not where the player is, whatever
-        its cost. Plain walls do not count: the grid can leave a thin pocket cut off, and the
-        nearest connected cell is the best guess there."""
+        """Can the player at (ax, ay) walk to (bx, by) as things stand? A cell across a wall or a
+        raised or closed gate (a lift platform's edge) is not where the player is, whatever its
+        cost."""
         for ln in self._lines_near(g, ax, ay, bx, by):
             if not self._crosses(ax, ay, bx, by, ln):
                 continue
-            if ln.back is None or ln.flags & ML_BLOCKING or self._door_class(ln) is not None:
+            if ln.back is None or ln.flags & ML_BLOCKING:
+                return False
+            if self._door_class(ln) is not None:
                 continue
             near, far = (ln.front, ln.back) if ln.side(ax, ay) == 0 else (ln.back, ln.front)
             if not self.gap_open(ln) or far.floor - near.floor > STEP_HEIGHT:
-                tag = self._gate_tag(ln)
-                if tag is not None and tag not in opened:
+                if self._gate_tag(ln) not in opened:
                     return False
         return True
 
-    def _player_cell(self, dist, px, py, opened=frozenset()):
+    def _player_cell(self, dist, px, py, opened=frozenset(), lenient=False):
         g = self._g
         c = self.CELL
         ix, iy = int((px - g["ox"]) // c), int((py - g["oy"]) // c)
@@ -634,7 +634,7 @@ class Level:
                 jx, jy = ix + dx, iy + dy
                 if 0 <= jx < g["w"] and 0 <= jy < g["h"] and dist[jx][jy] < 1e29:
                     cx, cy = self._cell_xy(g, jx, jy)
-                    if not self._snap_ok(g, px, py, cx, cy, opened):
+                    if not lenient and not self._snap_ok(g, px, py, cx, cy, opened):
                         continue
                     cost = dist[jx][jy] + math.hypot(cx - px, cy - py)
                     if best is None or cost < best[0]:
@@ -712,10 +712,19 @@ class Level:
         for stage in range(7):
             strict = self._solve(goals, keys, opened, False)
             cell = self._player_cell(strict, px, py, opened)
+            opt = None
+            if cell is None:
+                # Not cut off by a closed gate? Then a cell across a wall will do: the grid can
+                # leave a thin pocket (a start room) disconnected.
+                opt = self._solve(goals, keys, opened, True)
+                if (self._player_cell(opt, px, py, opened) is None
+                        and self._player_cell(opt, px, py, opened, True) is not None):
+                    cell = self._player_cell(strict, px, py, opened, True)
             if cell is not None:
                 return self._follow(strict, cell, keys, opened, px, py, goal_kind, goal_lines, stage)
-            opt = self._solve(goals, keys, opened, True)
-            cell = self._player_cell(opt, px, py, opened)
+            opt = opt or self._solve(goals, keys, opened, True)
+            cell = (self._player_cell(opt, px, py, opened)
+                    or self._player_cell(opt, px, py, opened, True))
             if cell is None:
                 self.why = f"stage {stage} {goal_kind}: player unreachable even optimistically (goals {len(goals)})"
                 return None

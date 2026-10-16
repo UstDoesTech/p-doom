@@ -1023,7 +1023,9 @@ static int descend(int start, int keys, int optimistic, int max_steps, step_t *p
     return n;
 }
 
-static int player_cell(const mobj_t *me, double *cost_out)
+/* mode 0: only cells the player can walk to as things stand (no wall or raised/closed gate in
+ * between). mode 1: any cell, the way out of a thin pocket the grid left cut off. */
+static int player_cell(const mobj_t *me, double *cost_out, int mode)
 {
     double px = (double)me->x / 65536.0, py = (double)me->y / 65536.0, best_cost = 1e30;
     int ix = (int)((px - g_ox) / CELL), iy = (int)((py - g_oy) / CELL), dx, dy, best_c = -1;
@@ -1034,12 +1036,12 @@ static int player_cell(const mobj_t *me, double *cost_out)
             if (jx < 0 || jy < 0 || jx >= g_w || jy >= g_h) continue;
             c = jy * g_w + jx;
             if (g_dist[c] >= (1 << 27)) continue;
-            {
-                /* a cell across a raised or closed gate (a lift platform's edge) is not where the
-                 * player is. Plain walls do not count: the grid can leave a thin pocket cut off */
+            if (mode == 0) {
+                /* a cell across a wall or a raised or closed gate (a lift platform's edge) is
+                 * not where the player is */
                 short sg[2];
                 int k = edge_info(px, py, cell_x(jx), cell_y(jy), sg);
-                if (k != 255 && (k & GATED)) continue;
+                if (k == 255 || (k & GATED)) continue;
             }
             cost = g_dist[c] + hypot2(cell_x(jx), cell_y(jy), px, py);
             if (cost < best_cost) {
@@ -1313,7 +1315,8 @@ static int plan_route(const player_t *p, const mobj_t *me, plan_t *res)
     refresh_live();
     sig = plan_signature(keys, now);
     if (g_plan_valid && sig == g_plan_sig) {
-        cell = player_cell(me, &cost);
+        cell = player_cell(me, &cost, 0);
+        if (cell < 0) cell = player_cell(me, &cost, 1);
         if (cell >= 0) return follow(me, keys, cell, cost, res, now);
     }
     g_plan_valid = 0;
@@ -1325,7 +1328,16 @@ static int plan_route(const player_t *p, const mobj_t *me, plan_t *res)
         int n, i, miss_key = 0, miss_tag = 0;
         if (g_ngoal == 0) return 0;
         solve_field(keys, 0);
-        cell = player_cell(me, &cost);
+        cell = player_cell(me, &cost, 0);
+        if (cell < 0) {
+            /* not cut off by a closed gate? then a cell across a wall will do: the grid can
+             * leave a thin pocket (a start room) disconnected */
+            solve_field(keys, 1);
+            if (player_cell(me, &cost, 0) < 0 && player_cell(me, &cost, 1) >= 0) {
+                solve_field(keys, 0);
+                cell = player_cell(me, &cost, 1);
+            }
+        }
         if (cell >= 0) {
             g_plan_sig = sig;
             g_plan_valid = 1;
@@ -1337,7 +1349,8 @@ static int plan_route(const player_t *p, const mobj_t *me, plan_t *res)
             return follow(me, keys, cell, cost, res, now);
         }
         solve_field(keys, 1);
-        cell = player_cell(me, &cost);
+        cell = player_cell(me, &cost, 0);
+        if (cell < 0) cell = player_cell(me, &cost, 1);
         if (cell < 0) return 0;
         n = descend(cell, keys, 1, 799, path);
         for (i = 1; i < n && !miss_key && !miss_tag; i++) {
