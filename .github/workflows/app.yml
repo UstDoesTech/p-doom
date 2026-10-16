@@ -87,7 +87,7 @@ jobs:
       - name: Lakebase tables and the app's grants
         run: |
           set +e
-          for f in databricks/lakebase/*.sql; do scripts/pg.sh -q -f "$f" >/dev/null 2>"$RUNNER_TEMP/pgerr" || { echo "::error title=lakebase $f::$(tr '\n' '|' < "$RUNNER_TEMP/pgerr" | cut -c1-600)"; exit 1; }; done
+          for f in databricks/lakebase/*.sql; do scripts/pg.sh -q -f "$f" >/dev/null 2>"$RUNNER_TEMP/pgerr" || { echo "::error title=lakebase $f::$(grep -v '^::add-mask::' "$RUNNER_TEMP/pgerr" | tr '\n' '|' | cut -c1-600)"; ep=$(databricks postgres get-endpoint projects/pdoom/branches/production/endpoints/primary -o json 2>&1 | jq -c '.status | {state: .current_state, hosts: .hosts}' 2>&1); echo "::notice title=lakebase endpoint::$ep"; exit 1; }; done
           sp=$(databricks apps get "$APP_NAME" -o json | jq -r '.service_principal_client_id')
           echo "::add-mask::$sp"
           out=$(scripts/pg.sh -c "GRANT USAGE ON SCHEMA pdoom TO \"$sp\"; GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA pdoom TO \"$sp\"; ALTER DEFAULT PRIVILEGES IN SCHEMA pdoom GRANT SELECT, INSERT, UPDATE ON TABLES TO \"$sp\";" 2>&1)
