@@ -11,6 +11,9 @@ on:
       last:
         description: How many final samples and decisions to show
         default: "25"
+  push:
+    branches: [feat/session-report]
+    paths: [.github/workflows/session-report.yml]
 
 permissions:
   contents: read
@@ -22,8 +25,8 @@ jobs:
       DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
       DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
       DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
-      SESSION: ${{ inputs.session }}
-      LAST: ${{ inputs.last }}
+      SESSION: ${{ inputs.session || 'c276eef0' }}
+      LAST: ${{ inputs.last || '25' }}
     steps:
       - uses: actions/checkout@v4
       - uses: databricks/setup-cli@main
