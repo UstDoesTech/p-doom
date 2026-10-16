@@ -50,6 +50,7 @@ CLEAR_AHEAD = 96.0  # room needed along a heading before the bot commits to walk
 ANCHOR_TICS = 140  # not having got anywhere in this long (while free to move) means being jammed
 ANCHOR_UNITS = 48.0
 ESCAPE_STEPS = 5
+PICKUP_GIVE_UP_TICS = 150  # chasing one pickup this long without getting it: leave it
 DETOUR_TICS = 60  # stay on a chosen way round an obstacle this long
 RAY_BEARINGS = {
     "ahead": 0.0, "ahead_right": 45.0, "right": 90.0, "behind_right": 135.0, "behind": 180.0,
@@ -105,6 +106,7 @@ class Memory:
     anchor_x: float = 0.0  # where the bot was ANCHOR_TICS ago, to tell a jam from slow progress
     anchor_y: float = 0.0
     anchor_tic: int = -1
+    pickup_since: int = -1  # game tic the current pickup chase began
     escape: int = 0  # steps left of the get-out-of-a-jam manoeuvre
     escapes: int = 0
     turn_dir: int = 0  # sticky turn away from a wall, so it does not dither: -1 left, 1 right
@@ -191,6 +193,14 @@ class RuleBot:
         safe = nearest is None or nearest.distance > SAFE_DISTANCE
         if safe and state.tic >= mem.skip_until:
             pickup = self._pickup_target(state, out_of_ammo)
+            if pickup is None:
+                mem.pickup_since = -1
+            elif mem.pickup_since < 0:
+                mem.pickup_since = state.tic
+            elif state.tic - mem.pickup_since > PICKUP_GIVE_UP_TICS:
+                mem.skip_until = state.tic + SKIP_PICKUP_TICS
+                mem.pickup_since = -1
+                pickup = None
             if pickup is not None:
                 bearing, rule, distance = pickup
                 if abs(bearing) > PICKUP_ALIGN_DEG:

@@ -244,3 +244,14 @@ def test_escapes_a_jam_it_cannot_explain():
     bot = RuleBot()
     seen = [bot.decide(state(tic=1 + i * 35)).raw_output["rule"] for i in range(14)]
     assert "escape_back" in seen and "escape_turn" in seen and "escape_walk" in seen
+
+
+def test_gives_up_chasing_a_pickup_it_never_collects():
+    bot = RuleBot()
+    seen = []
+    for i in range(14):
+        d = bot.decide(scene(tic=1 + i * 20, pickups=[pickup("armor", 5.0, 3.0)], exit_bearing=0.0,
+                             x=100.0 * i))
+        seen.append(d.raw_output["rule"])
+    assert seen[0].endswith("armor")
+    assert not seen[-1].endswith("armor")

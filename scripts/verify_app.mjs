@@ -42,7 +42,8 @@ try {
         d.intent, d.raw_output?.rule, st.route ? [st.route.via, Math.round(st.route.bearing), Math.round(st.route.distance), Math.round(st.route.remaining)] : null,
         st.walls?.ahead, st.player.health,
         (st.enemies || []).slice(0, 2).map((e) => [e.type, Math.round(e.distance), Math.round(e.bearing), e.line_of_sight ? 1 : 0]),
-        st.use_target ? st.use_target.kind : null]);
+        st.use_target ? st.use_target.kind : null,
+        (st.pickups || []).slice(0, 2).map((e) => [e.type, Math.round(e.distance), Math.round(e.bearing)])]);
     } catch {}
   });
   page.on("response", (r) => {
