@@ -41,4 +41,5 @@ jobs:
           q last_samples "select tic, health, armor, weapon, ammo, round(x::numeric), round(y::numeric), round(angle::numeric), action from (select * from pdoom.doom_events where $W order by tic desc limit $LAST) t order by tic"
           q last_decisions "select tic, intent, latency_ms, coalesce(raw_output->>'rule', raw_output->'assist'->>'note', ''), coalesce(raw_output->'assist'->'unstick'->>'step',''), left(coalesce(error,''),60) from (select * from pdoom.doom_decisions where $W order by tic desc limit $LAST) t order by tic"
           q intents "select intent, count(*), count(*) filter (where raw_output->'assist'->'unstick' is not null) as unstick from pdoom.doom_decisions where $W group by 1 order by 2 desc"
-          q health_curve "select tic/70 as sec, min(health), min(armor), max(ammo) from pdoom.doom_events where $W group by 1 order by 1"
+          q path "select (tic/525)*15 as sec, min(health), round(avg(x)::numeric), round(avg(y)::numeric), round(min(x)::numeric)||'..'||round(max(x)::numeric) as xr, round(min(y)::numeric)||'..'||round(max(y)::numeric) as yr, count(*) from pdoom.doom_events where $W group by 1 order by 1"
+          q totals "select count(*), min(tic), max(tic), min(health), max(health) from pdoom.doom_events where $W"
