@@ -1,7 +1,7 @@
 import json
 
 from pdoom.databricks_sql import SqlRunner
-from pdoom.models import Enemy, GameState, Intent, PlayerState
+from pdoom.models import Decision, Enemy, GameState, Intent, PlayerState
 from pdoom.players.ai_decide import AiDecidePlayer, load_questions, parse_decision, sql_literal
 
 # Shape taken from the ai_decide documentation.
@@ -192,3 +192,75 @@ def test_the_sql_backup_is_given_a_time_limit():
     sql = FakeSql([[json.dumps(GOOD)]])
     AiDecidePlayer(sql).decide(game_state())
     assert sql.max_wait_s_seen == 15.0
+
+
+# ---- the route assist -------------------------------------------------------------------
+
+
+def routed(intent, bearing, distance=300.0, via="portal", enemies=()):
+    from pdoom.models import Route
+    from pdoom.players.ai_decide import shape
+
+    state = GameState(
+        tic=5,
+        level="E1M1",
+        seed=1,
+        player=PlayerState(health=100, x=0, y=0, angle=0),
+        enemies=list(enemies),
+        route=Route(bearing=bearing, distance=distance, via=via, remaining=10),
+    )
+    return shape(state, Decision(intent=intent))
+
+
+def test_a_turn_is_held_only_as_long_as_the_route_bearing_needs():
+    d = routed(Intent.turn_right, 40.0)
+    assert d.intent == Intent.turn_right
+    assert d.hold_tics is not None and d.hold_tics < 20
+
+
+def test_a_turn_the_wrong_way_round_the_route_is_flipped_and_recorded():
+    d = routed(Intent.turn_left, 90.0)
+    assert d.intent == Intent.turn_right
+    assert "assist" in d.raw_output and "note" in d.raw_output["assist"]
+
+
+def test_a_small_bearing_is_left_to_the_model():
+    d = routed(Intent.turn_left, 5.0)
+    assert d.intent == Intent.turn_left and d.hold_tics is None
+
+
+def test_advance_is_held_for_the_distance_to_the_next_point():
+    near = routed(Intent.advance, 0.0, distance=60.0)
+    far = routed(Intent.advance, 0.0, distance=900.0)
+    assert near.hold_tics < far.hold_tics <= 14
+
+
+def test_advance_to_a_door_stops_short_of_it():
+    door = routed(Intent.advance, 0.0, distance=100.0, via="door")
+    open_ = routed(Intent.advance, 0.0, distance=100.0, via="portal")
+    assert door.hold_tics < open_.hold_tics
+
+
+def test_an_enemy_in_sight_is_not_overridden_by_the_route():
+    foe = Enemy(type="zombieman", distance=300, bearing=-60, line_of_sight=True)
+    d = routed(Intent.turn_left, 90.0, enemies=[foe])
+    assert d.intent == Intent.turn_left  # the enemy is on the left
+    assert d.hold_tics is not None
+    assert routed(Intent.advance, 0.0, enemies=[foe]).hold_tics is None
+
+
+def test_no_route_means_no_change():
+    from pdoom.players.ai_decide import shape
+
+    d = Decision(intent=Intent.turn_left)
+    assert shape(game_state().model_copy(update={"enemies": []}), d) == d
+
+
+def test_the_assist_can_be_switched_off():
+    class Api:
+        def run(self, state):
+            return GOOD
+
+    on = AiDecidePlayer(api=Api())
+    off = AiDecidePlayer(api=Api(), assist=False)
+    assert off.assist is False and on.assist is True
