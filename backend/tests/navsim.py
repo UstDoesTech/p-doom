@@ -608,18 +608,19 @@ class Level:
         return cells, "kill", []
 
     def _snap_ok(self, g, ax, ay, bx, by, opened=frozenset()):
-        """Can the player at (ax, ay) walk to (bx, by) as things stand? A cell on the far side of
-        a wall, or of a raised or closed gate, is not where the player is, whatever its cost."""
+        """Can the player at (ax, ay) walk to (bx, by) as things stand? A cell across a raised or
+        closed gate (a lift platform's edge, a lowered floor) is not where the player is, whatever
+        its cost. Plain walls do not count: the grid can leave a thin pocket cut off, and the
+        nearest connected cell is the best guess there."""
         for ln in self._lines_near(g, ax, ay, bx, by):
             if not self._crosses(ax, ay, bx, by, ln):
                 continue
-            if ln.back is None or ln.flags & ML_BLOCKING:
-                return False
-            if self._door_class(ln) is not None:
+            if ln.back is None or ln.flags & ML_BLOCKING or self._door_class(ln) is not None:
                 continue
             near, far = (ln.front, ln.back) if ln.side(ax, ay) == 0 else (ln.back, ln.front)
             if not self.gap_open(ln) or far.floor - near.floor > STEP_HEIGHT:
-                if self._gate_tag(ln) not in opened:
+                tag = self._gate_tag(ln)
+                if tag is not None and tag not in opened:
                     return False
         return True
 

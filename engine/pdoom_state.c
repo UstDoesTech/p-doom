@@ -1035,10 +1035,11 @@ static int player_cell(const mobj_t *me, double *cost_out)
             c = jy * g_w + jx;
             if (g_dist[c] >= (1 << 27)) continue;
             {
-                /* a cell across a wall or a raised or closed gate is not where the player is */
+                /* a cell across a raised or closed gate (a lift platform's edge) is not where the
+                 * player is. Plain walls do not count: the grid can leave a thin pocket cut off */
                 short sg[2];
                 int k = edge_info(px, py, cell_x(jx), cell_y(jy), sg);
-                if (k == 255 || (k & GATED)) continue;
+                if (k != 255 && (k & GATED)) continue;
             }
             cost = g_dist[c] + hypot2(cell_x(jx), cell_y(jy), px, py);
             if (cost < best_cost) {
