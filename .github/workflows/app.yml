@@ -119,7 +119,11 @@ jobs:
           PDOOM_UC_SCHEMA: ${{ env.SCHEMA }}
         run: |
           pip install -q .
-          python -m pdoom.setup_db --sql-dir ../databricks/sql
+          set +e
+          out=$(python -m pdoom.setup_db --sql-dir ../databricks/sql 2>&1)
+          code=$?
+          echo "::notice title=setup_db exit=${code}::$(printf '%s' "$out" | tail -c 1800 | tr '\n' '|')"
+          exit $code
       - name: Let the app's service principal into the catalog
         run: |
           sp=$(databricks apps get "$APP_NAME" -o json | jq -r '.service_principal_client_id')
