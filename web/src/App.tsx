@@ -346,7 +346,9 @@ export default function App() {
   return (
     <main>
       <header className="top">
-        <h1>p(doom)</h1>
+        <h1>
+          <img className="logo" src="/doom-logo.png" alt="p(doom)" width={128} height={64} />
+        </h1>
         <p>Pick a player, press start, and the attempt lands in Databricks.</p>
       </header>
 
