@@ -21,6 +21,7 @@ RAY_MAX = 512.0
 USE_RANGE = 64.0
 RADIUS = 16.0
 WALK_BOX = 14.0
+DOOR_BOX = 9.0
 ML_BLOCKING = 1
 
 WALL_BEARINGS = [0, 45, 90, 135, 180, -135, -90, -45]
@@ -37,6 +38,18 @@ SWITCHES = {
 }
 EXIT_USE = {11, 51}
 EXIT_ANY = {11, 51, 52, 124}
+TELEPORT = {39, 97}
+LIGHT = {12, 13, 17, 35, 79, 80, 81, 104, 138, 139, 156, 157, 158, 159, 169, 170, 171, 172, 173, 174, 175, 176, 177, 178, 179, 180}
+KEY_THINGS = {5: 1, 40: 1, 6: 2, 39: 2, 13: 3, 38: 3}
+STAIRS = {7, 8, 100, 127}
+KEY_COST = 300.0
+GATE_COST = 150.0
+JUMP_COST = 100.0
+
+
+def is_trigger(special: int) -> bool:
+    """A line special that moves a tagged sector (doors, floors, lifts, stairs)."""
+    return special != 0 and special not in LIGHT and special not in TELEPORT and special not in EXIT_ANY and special != 48
 
 
 def kind_of(special: int) -> str | None:
@@ -57,6 +70,8 @@ class Sector:
     cx: float = 0.0
     cy: float = 0.0
     index: int = 0
+    tag: int = 0
+    special: int = 0
 
 
 @dataclass
@@ -70,6 +85,7 @@ class Line:
     front: Sector | None
     back: Sector | None
     index: int = 0
+    tag: int = 0
 
     @property
     def dx(self) -> float:
@@ -110,15 +126,16 @@ class Level:
         self.sectors: list[Sector] = []
         for i in range(len(found["SECTORS"]) // 26):
             fl, ce = struct.unpack_from("<hh", found["SECTORS"], 26 * i)
-            self.sectors.append(Sector(float(fl), float(ce), index=i))
+            _light, sspecial, stag = struct.unpack_from("<hhh", found["SECTORS"], 26 * i + 20)
+            self.sectors.append(Sector(float(fl), float(ce), index=i, tag=stag, special=sspecial))
         sides = [struct.unpack_from("<hh8s8s8sh", found["SIDEDEFS"], 30 * i)[5] for i in range(len(found["SIDEDEFS"]) // 30)]
         self.lines: list[Line] = []
         for i in range(len(found["LINEDEFS"]) // 14):
-            v1, v2, fl, sp, _tag, r, lf = struct.unpack_from("<hhhhhhh", found["LINEDEFS"], 14 * i)
+            v1, v2, fl, sp, ltag, r, lf = struct.unpack_from("<hhhhhhh", found["LINEDEFS"], 14 * i)
             front = self.sectors[sides[r]] if r >= 0 else None
             back = self.sectors[sides[lf]] if lf >= 0 else None
             (x1, y1), (x2, y2) = verts[v1], verts[v2]
-            self.lines.append(Line(float(x1), float(y1), float(x2), float(y2), fl, sp, front, back, i))
+            self.lines.append(Line(float(x1), float(y1), float(x2), float(y2), fl, sp, front, back, i, ltag))
         for ln in self.lines:
             if ln.front is not None:
                 ln.front.lines.append(ln)
@@ -134,6 +151,7 @@ class Level:
         self._ssectors = [struct.unpack_from("<hh", found["SSECTORS"], 4 * i) for i in range(len(found["SSECTORS"]) // 4)]
         self._nodes = [struct.unpack_from("<hhhh8hHH", found["NODES"], 28 * i) for i in range(len(found["NODES"]) // 28)]
         things = [struct.unpack_from("<hhhhh", found["THINGS"], 10 * i) for i in range(len(found["THINGS"]) // 10)]
+        self.things = things
         start = next(t for t in things if t[3] == 1)
         self.start = (float(start[0]), float(start[1]), float(start[2]))
         self.doors: dict[int, Door] = {}
@@ -221,6 +239,46 @@ class Level:
     CELL = 32.0
     DIRS = [(1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0), (-1, -1), (0, -1), (1, -1)]
 
+    def _trigger_tags(self) -> set[int]:
+        if getattr(self, "_ttags", None) is None:
+            self._ttags = {ln.tag for ln in self.lines if ln.tag and is_trigger(ln.special)}
+        return self._ttags
+
+    def _stair_sectors(self) -> dict[int, int]:
+        """Sector index -> tag for the steps a build-stairs trigger raises. Only the first step
+        is tagged; the rest are found by walking to neighbours that start at the same height."""
+        if getattr(self, "_stairs", None) is None:
+            out: dict[int, int] = {}
+            for ln in self.lines:
+                if ln.special not in STAIRS or not ln.tag:
+                    continue
+                roots = [s for s in self.sectors if s.tag == ln.tag]
+                todo = list(roots)
+                for r in roots:
+                    out[r.index] = ln.tag
+                while todo and len(out) < 400:
+                    cur = todo.pop()
+                    for e in cur.lines:
+                        if e.back is None:
+                            continue
+                        o = e.back if e.front is cur else e.front
+                        if o.index not in out and o.floor == cur.floor:
+                            out[o.index] = ln.tag
+                            todo.append(o)
+            self._stairs = out
+        return self._stairs
+
+    def _gate_tag(self, ln: Line) -> int | None:
+        """The tag of the sector a trigger would have to move to make this line passable."""
+        tags = self._trigger_tags()
+        stairs = self._stair_sectors()
+        for s in (ln.front, ln.back):
+            if s is not None and s.tag in tags:
+                return s.tag
+            if s is not None and s.index in stairs:
+                return stairs[s.index]
+        return None
+
     def _grid(self):
         if getattr(self, "_g", None) is not None:
             return self._g
@@ -244,7 +302,7 @@ class Level:
                     continue
                 walk[ix][iy] = True
         g["walk"] = walk
-        edges: dict[tuple[int, int, int], int] = {}
+        edges: dict[tuple[int, int, int], tuple[int, tuple[int, ...]]] = {}
         for ix in range(w):
             for iy in range(h):
                 if not walk[ix][iy]:
@@ -255,11 +313,106 @@ class Level:
                         continue
                     if dx and dy and not (walk[ix + dx][iy] and walk[ix][iy + dy]):
                         continue
-                    key = self._edge_key(g, ix, iy, jx, jy)
-                    if key is not None:
-                        edges[(ix, iy, d)] = key
+                    info = self._edge_info(g, ix, iy, jx, jy)
+                    if info is not None:
+                        edges[(ix, iy, d)] = info
         g["edges"] = edges
+        # a door or a trigger-moved sector can be thinner than a cell, so no cell lies inside it:
+        # hop over it from a cell on one side to a cell on the other
+        hops: dict[tuple[int, int], list] = {}
+        hop_in: dict[tuple[int, int], list] = {}
+        gate_lines = [ln for ln in self.lines if ln.back is not None and not ln.flags & ML_BLOCKING
+                      and (ln.special in DOORS or (self._gate_tag(ln) is not None and (
+                          not self.gap_open(ln) or abs(ln.front.floor - ln.back.floor) > STEP_HEIGHT)))]
+        near_gate: set[tuple[int, int]] = set()
+        for ln in gate_lines:
+            near_gate.update(self._cells_near_line(g, ln, 48.0, any_side=True))
+        for (ix, iy) in near_gate:
+            for dx in range(-2, 3):
+                for dy in range(-2, 3):
+                    if max(abs(dx), abs(dy)) < 2:
+                        continue
+                    jx, jy = ix + dx, iy + dy
+                    if not (0 <= jx < w and 0 <= jy < h) or not walk[jx][jy]:
+                        continue
+                    info = self._edge_info(g, ix, iy, jx, jy)
+                    if info is None or (info[0] < 4 and not info[1]):
+                        continue
+                    length = math.hypot(dx, dy) * c
+                    hops.setdefault((ix, iy), []).append(((jx, jy), info, length))
+                    hop_in.setdefault((jx, jy), []).append(((ix, iy), info, length))
+        g["hops"], g["hop_in"] = hops, hop_in
+        # teleporters: standing on the line sends the player to the destination
+        jump_in: dict[tuple[int, int], list[tuple[tuple[int, int], tuple[float, float]]]] = {}
+        jumps: dict[tuple[int, int], tuple[tuple[int, int], Line]] = {}
+        for ln in self.lines:
+            if ln.special not in TELEPORT or not ln.tag:
+                continue
+            dest = next((t for t in self.things if t[3] == 14 and self.sector_at(float(t[0]), float(t[1])).tag == ln.tag), None)
+            if dest is None:
+                continue
+            dcell = self._nearest_walkable(g, float(dest[0]), float(dest[1]))
+            if dcell is None:
+                continue
+            for ix, iy in self._cells_near_line(g, ln, 24.0, any_side=True):
+                jumps[(ix, iy)] = (dcell, ln)
+                jump_in.setdefault(dcell, []).append(((ix, iy), (ln.x1, ln.y1)))
+        g["jumps"], g["jump_in"] = jumps, jump_in
         return g
+
+    def _cell_xy(self, g, ix, iy):
+        return g["ox"] + (ix + 0.5) * self.CELL, g["oy"] + (iy + 0.5) * self.CELL
+
+    def _nearest_walkable(self, g, x, y):
+        ix, iy = int((x - g["ox"]) // self.CELL), int((y - g["oy"]) // self.CELL)
+        best = None
+        for r in range(0, 4):
+            for dx in range(-r, r + 1):
+                for dy in range(-r, r + 1):
+                    jx, jy = ix + dx, iy + dy
+                    if 0 <= jx < g["w"] and 0 <= jy < g["h"] and g["walk"][jx][jy]:
+                        cx, cy = self._cell_xy(g, jx, jy)
+                        d = math.hypot(cx - x, cy - y)
+                        if best is None or d < best[0]:
+                            best = (d, (jx, jy))
+            if best:
+                return best[1]
+        return None
+
+    def _cells_near_point(self, g, x, y, reach):
+        """Walkable cells whose centre is within reach of a point, or the nearest one. A key on a
+        pedestal can be taken from the floor beside it: pickups ignore a height difference of
+        less than the player's height."""
+        out = []
+        ix, iy = int((x - g["ox"]) // self.CELL), int((y - g["oy"]) // self.CELL)
+        for dx in range(-2, 3):
+            for dy in range(-2, 3):
+                jx, jy = ix + dx, iy + dy
+                if 0 <= jx < g["w"] and 0 <= jy < g["h"] and g["walk"][jx][jy]:
+                    cx, cy = self._cell_xy(g, jx, jy)
+                    if abs(cx - x) <= reach and abs(cy - y) <= reach:
+                        out.append((jx, jy))
+        if not out:
+            c = self._nearest_walkable(g, x, y)
+            if c:
+                out.append(c)
+        return out
+
+    def _cells_near_line(self, g, ln, reach, any_side=False):
+        out = []
+        mx, my = (ln.x1 + ln.x2) / 2, (ln.y1 + ln.y2) / 2
+        span = math.hypot(ln.dx, ln.dy) / 2 + reach + self.CELL
+        x0, x1 = int((mx - span - g["ox"]) // self.CELL), int((mx + span - g["ox"]) // self.CELL)
+        y0, y1 = int((my - span - g["oy"]) // self.CELL), int((my + span - g["oy"]) // self.CELL)
+        for ix in range(max(0, x0), min(g["w"] - 1, x1) + 1):
+            for iy in range(max(0, y0), min(g["h"] - 1, y1) + 1):
+                if not g["walk"][ix][iy]:
+                    continue
+                x, y = self._cell_xy(g, ix, iy)
+                d, _, _ = self.line_distance(x, y, ln)
+                if d <= reach and (any_side or ln.side(x, y) == 0):
+                    out.append((ix, iy))
+        return out
 
     def _lines_near(self, g, x1, y1, x2, y2, pad=0.0):
         seen, out = set(), []
@@ -293,15 +446,23 @@ class Level:
 
     def _near_lines_blocked(self, g, x, y):
         z = self.sector_at(x, y).floor
-        for ln in self._lines_near(g, x, y, x, y, WALK_BOX):
-            if not self._touches_box(ln, x, y, WALK_BOX):
+        box = WALK_BOX
+        # a throat beside a door or a trigger-moved sector may be too tight for the full box
+        for ln in self._lines_near(g, x, y, x, y, 48.0):
+            if (ln.special in DOORS or (ln.back is not None and self._gate_tag(ln) is not None
+                                        and not self.gap_open(ln))) and self.line_distance(x, y, ln)[0] < 40.0:
+                box = DOOR_BOX
+                break
+        for ln in self._lines_near(g, x, y, x, y, box):
+            if not self._touches_box(ln, x, y, box):
                 continue
             if ln.back is None or ln.flags & ML_BLOCKING:
                 return True
             if ln.special in DOORS:
                 continue
             if not self.gap_open(ln) or max(ln.front.floor, ln.back.floor) - z > STEP_HEIGHT:
-                return True
+                if self._gate_tag(ln) is None:
+                    return True
         return False
 
     @staticmethod
@@ -314,13 +475,13 @@ class Level:
         u = ((ln.x1 - ax) * d1y - (ln.y1 - ay) * d1x) / denom
         return 0 <= t <= 1 and 0 <= u <= 1
 
-    def _edge_key(self, g, ix, iy, jx, jy):
-        """None if the step between two cells is blocked, else the key needed (0 for none, 4 for
-        a door that needs no key) for the doors it crosses."""
-        c = self.CELL
-        ax, ay = g["ox"] + (ix + 0.5) * c, g["oy"] + (iy + 0.5) * c
-        bx, by = g["ox"] + (jx + 0.5) * c, g["oy"] + (jy + 0.5) * c
-        need = 0
+    def _edge_info(self, g, ix, iy, jx, jy):
+        """None if the step between two cells can never be made, else (door, gates): the door
+        class (0 none, 4 a door that needs no key, 5..7 a key door) and the tags of the sectors
+        a trigger has to move first (closed doors, raised floors, lifts)."""
+        ax, ay = self._cell_xy(g, ix, iy)
+        bx, by = self._cell_xy(g, jx, jy)
+        need, gates = 0, []
         for ln in self._lines_near(g, ax, ay, bx, by):
             if not self._crosses(ax, ay, bx, by, ln):
                 continue
@@ -329,36 +490,38 @@ class Level:
             if ln.special in DOORS:
                 need = max(need, 4 + DOOR_KEY.get(ln.special, 0))
                 continue
-            if not self.gap_open(ln):
-                return None
             near, far = (ln.front, ln.back) if ln.side(ax, ay) == 0 else (ln.back, ln.front)
-            if far.floor - near.floor > STEP_HEIGHT:
-                return None
-        return need
+            if not self.gap_open(ln) or far.floor - near.floor > STEP_HEIGHT:
+                tag = self._gate_tag(ln)
+                if tag is None:
+                    return None
+                gates.append(tag)
+        return need, tuple(sorted(set(gates)))
 
-    def distance_field(self, keys: set[int]):
+    def _edge_cost(self, info, length, keys, opened, optimistic):
+        need, gates = info
+        cost = length
+        if need >= 4:
+            cost += 64.0
+        if need >= 5 and (need - 4) not in keys:
+            if not optimistic or ("key", need - 4) in self._banned:
+                return None
+            cost += KEY_COST
+        for t in gates:
+            if t not in opened:
+                if not optimistic or ("gate", t) in self._banned:
+                    return None
+                cost += GATE_COST
+        return cost
+
+    def _solve(self, goals, keys, opened, optimistic):
         g = self._grid()
-        cache = g.setdefault("field", {})
-        k = tuple(sorted(keys))
-        if k in cache:
-            return cache[k]
-        c = self.CELL
         w, h = g["w"], g["h"]
         dist = [[1e30] * h for _ in range(w)]
         heap = []
-        for ln in self.lines:
-            if ln.special not in EXIT_ANY or ln.front is None:
-                continue
-            mx, my = (ln.x1 + ln.x2) / 2, (ln.y1 + ln.y2) / 2
-            for ix in range(w):
-                for iy in range(h):
-                    if not g["walk"][ix][iy]:
-                        continue
-                    x, y = g["ox"] + (ix + 0.5) * c, g["oy"] + (iy + 0.5) * c
-                    d, _, _ = self.line_distance(x, y, ln)
-                    if d <= 40.0 and ln.side(x, y) == 0 and abs(x - mx) < 400 and abs(y - my) < 400:
-                        dist[ix][iy] = 0.0
-                        heap.append((0.0, ix, iy))
+        for ix, iy in goals:
+            dist[ix][iy] = 0.0
+            heap.append((0.0, ix, iy))
         heapq.heapify(heap)
         while heap:
             d, ix, iy = heapq.heappop(heap)
@@ -368,67 +531,181 @@ class Level:
                 jx, jy = ix + dx, iy + dy
                 if not (0 <= jx < w and 0 <= jy < h):
                     continue
-                back = (dd + 4) % 8
-                key = g["edges"].get((jx, jy, back))
-                if key is None:
+                info = g["edges"].get((jx, jy, (dd + 4) % 8))
+                if info is None:
                     continue
-                if key >= 5 and (key - 4) not in keys:
+                cost = self._edge_cost(info, 45.25 if dx and dy else 32.0, keys, opened, optimistic)
+                if cost is None:
                     continue
-                nd = d + (45.25 if dx and dy else 32.0) + (64.0 if key >= 4 else 0.0)
-                if nd < dist[jx][jy]:
-                    dist[jx][jy] = nd
-                    heapq.heappush(heap, (nd, jx, jy))
-        cache[k] = dist
+                if d + cost < dist[jx][jy]:
+                    dist[jx][jy] = d + cost
+                    heapq.heappush(heap, (d + cost, jx, jy))
+            for (sx, sy), info, length in g["hop_in"].get((ix, iy), ()):
+                cost = self._edge_cost(info, length, keys, opened, optimistic)
+                if cost is not None and d + cost < dist[sx][sy]:
+                    dist[sx][sy] = d + cost
+                    heapq.heappush(heap, (d + cost, sx, sy))
+            for (sx, sy), _pt in g["jump_in"].get((ix, iy), ()):
+                if d + JUMP_COST < dist[sx][sy]:
+                    dist[sx][sy] = d + JUMP_COST
+                    heapq.heappush(heap, (d + JUMP_COST, sx, sy))
         return dist
 
-    def find_route(self, keys: set[int], px: float, py: float, facing: float):
-        g = self._grid()
-        dist = self.distance_field(keys)
+    def _exit_goals(self, g):
+        exits = [ln for ln in self.lines if ln.special in EXIT_ANY and ln.front is not None]
+        plain = [ln for ln in exits if ln.special != 51]
+        cells = set()
+        for ln in plain or exits:
+            cells.update(self._cells_near_line(g, ln, 40.0))
+        if cells:
+            return cells, "exit", plain or exits
+        # no exit line (E1M8): the level ends when the Barons die
+        for t in self.things:
+            if t[3] == 3003:
+                c = self._nearest_walkable(g, float(t[0]), float(t[1]))
+                if c:
+                    cells.add(c)
+        return cells, "kill", []
+
+    def _player_cell(self, dist, px, py):
+        g = self._g
         c = self.CELL
         ix, iy = int((px - g["ox"]) // c), int((py - g["oy"]) // c)
-        # the player's cell, or the best walkable one beside it
-        best_cell = None
+        best = None
         for dx in (-1, 0, 1):
             for dy in (-1, 0, 1):
                 jx, jy = ix + dx, iy + dy
                 if 0 <= jx < g["w"] and 0 <= jy < g["h"] and dist[jx][jy] < 1e29:
-                    cx, cy = g["ox"] + (jx + 0.5) * c, g["oy"] + (jy + 0.5) * c
+                    cx, cy = self._cell_xy(g, jx, jy)
                     cost = dist[jx][jy] + math.hypot(cx - px, cy - py)
-                    if best_cell is None or cost < best_cell[0]:
-                        best_cell = (cost, jx, jy)
-        if best_cell is None:
-            return None
-        remaining, cx, cy = best_cell
-        if dist[cx][cy] == 0.0:
-            return ("exit", None, remaining, None)
-        path = [(cx, cy)]
-        door_at = None
-        for _ in range(24):
-            ccx, ccy = path[-1]
-            nxt = None
+                    if best is None or cost < best[0]:
+                        best = (cost, jx, jy)
+        return best
+
+    def _descend(self, dist, cell, keys, opened, optimistic, steps):
+        """Walk downhill from a cell. Returns the cells and, for each step, how it is made:
+        ('walk', info), ('jump', line)."""
+        g = self._g
+        path, how = [cell], []
+        for _ in range(steps):
+            cx, cy = path[-1]
+            if dist[cx][cy] == 0.0:
+                break
+            best = None
             for dd, (dx, dy) in enumerate(self.DIRS):
-                jx, jy = ccx + dx, ccy + dy
-                key = g["edges"].get((ccx, ccy, dd))
-                if key is None or not (0 <= jx < g["w"] and 0 <= jy < g["h"]):
+                jx, jy = cx + dx, cy + dy
+                info = g["edges"].get((cx, cy, dd))
+                if info is None or not (0 <= jx < g["w"] and 0 <= jy < g["h"]):
                     continue
-                if key >= 5 and (key - 4) not in keys:
+                cost = self._edge_cost(info, 45.25 if dx and dy else 32.0, keys, opened, optimistic)
+                if cost is None or dist[jx][jy] >= dist[cx][cy]:
                     continue
-                if dist[jx][jy] < dist[ccx][ccy] and (nxt is None or dist[jx][jy] < nxt[0]):
-                    nxt = (dist[jx][jy], jx, jy, key)
-            if nxt is None:
+                if best is None or cost + dist[jx][jy] < best[0]:
+                    best = (cost + dist[jx][jy], (jx, jy), ("walk", info))
+            for (jx, jy), info, length in g["hops"].get((cx, cy), ()):
+                cost = self._edge_cost(info, length, keys, opened, optimistic)
+                if cost is not None and dist[jx][jy] < dist[cx][cy] and (best is None or cost + dist[jx][jy] < best[0]):
+                    best = (cost + dist[jx][jy], (jx, jy), ("walk", info))
+            jump = g["jumps"].get((cx, cy))
+            if jump is not None and dist[jump[0][0]][jump[0][1]] + JUMP_COST < dist[cx][cy] + 1e-6:
+                if best is None or JUMP_COST + dist[jump[0][0]][jump[0][1]] <= best[0]:
+                    best = (JUMP_COST + dist[jump[0][0]][jump[0][1]], jump[0], ("jump", jump[1]))
+            if best is None:
                 break
-            if nxt[3] >= 4 and door_at is None:
-                door_at = len(path)  # index of the cell just before the door step
-            path.append((nxt[1], nxt[2]))
-            if door_at is not None:
+            path.append(best[1])
+            how.append(best[2])
+        return path, how
+
+    def _subgoal(self, blocker, visited):
+        g = self._g
+        kind, what = blocker
+        cells: set = set()
+        if kind == "key":
+            for t in self.things:
+                if KEY_THINGS.get(t[3]) == what:
+                    cells.update(self._cells_near_point(g, float(t[0]), float(t[1]), 48.0))
+            return (cells, "pickup", []) if cells else None
+        lines = [ln for ln in self.lines if ln.tag == what and is_trigger(ln.special) and ln.index not in visited]
+        for ln in lines:
+            cells.update(self._cells_near_line(g, ln, 40.0 if ln.special in SWITCHES else 24.0, any_side=ln.special not in SWITCHES))
+        return (cells, "switch", lines) if cells else None
+
+    def plan(self, keys, px, py, opened=frozenset(), visited=frozenset()):
+        """The next place to go: a dict with via (portal, door, exit, switch, walk, pickup),
+        remaining, the point to head for, and the goal the stage is working towards."""
+        g = self._grid()
+        goals, goal_kind, goal_lines = self._exit_goals(g)
+        self.blockers = []
+        self._banned = set()
+        stage = 0
+        for stage in range(7):
+            strict = self._solve(goals, keys, opened, False)
+            cell = self._player_cell(strict, px, py)
+            if cell is not None:
+                return self._follow(strict, cell, keys, opened, px, py, goal_kind, goal_lines, stage)
+            opt = self._solve(goals, keys, opened, True)
+            cell = self._player_cell(opt, px, py)
+            if cell is None:
+                self.why = f"stage {stage} {goal_kind}: player unreachable even optimistically (goals {len(goals)})"
+                return None
+            path, how = self._descend(opt, (cell[1], cell[2]), keys, opened, True, 800)
+            blocker = None
+            for (kind, info) in how:
+                if kind != "walk":
+                    continue
+                need, gates = info
+                if need >= 5 and (need - 4) not in keys:
+                    blocker = ("key", need - 4)
+                    break
+                missing = [t for t in gates if t not in opened]
+                if missing:
+                    blocker = ("gate", missing[0])
+                    break
+            if blocker is None:
+                self.why = f"stage {stage}: no blocker on optimistic path"
+                return None
+            self.blockers = self.blockers[:stage] + [blocker]
+            self._banned.add(blocker)
+            sub = self._subgoal(blocker, visited)
+            if sub is None:
+                self.why = f"stage {stage}: no subgoal for {blocker}"
+                return None
+            goals, goal_kind, goal_lines = sub
+        self.why = "ran out of stages: " + repr(self.blockers)
+        return None
+
+    def _follow(self, dist, cell, keys, opened, px, py, goal_kind, goal_lines, stage):
+        g = self._g
+        remaining, cx, cy = cell
+        start = (cx, cy)
+        if dist[cx][cy] == 0.0:
+            ln = None
+            if goal_lines:
+                ln = min(goal_lines, key=lambda e: self.line_distance(px, py, e)[0])
+                _, mx, my = self.line_distance(px, py, ln)
+            else:
+                mx, my = px, py
+            via = {"exit": "exit", "switch": "walk" if ln is not None and ln.special not in SWITCHES else "switch",
+                   "pickup": "portal", "kill": "portal"}[goal_kind]
+            return {"via": via, "remaining": remaining, "point": (mx, my), "goal": goal_kind, "line": ln}
+        path, how = self._descend(dist, start, keys, opened, False, 24)
+        door_at = jump_at = None
+        for i, (kind, info) in enumerate(how):
+            if kind == "jump":
+                jump_at = i
                 break
-            if nxt[0] == 0.0:
+            if info[0] >= 4:
+                door_at = i
                 break
-        # the furthest path cell in a straight, clear line from the player
+        stop = door_at if door_at is not None else jump_at
+        if jump_at is not None:
+            ln = how[jump_at][1]
+            _, mx, my = self.line_distance(px, py, ln)
+            return {"via": "walk", "remaining": remaining, "point": (mx, my), "goal": goal_kind, "line": None}
+        limit = stop if stop is not None else len(path) - 1
         target = path[0]
-        limit = door_at if door_at is not None else len(path) - 1
         for idx in range(0, limit + 1):
-            tx, ty = g["ox"] + (path[idx][0] + 0.5) * c, g["oy"] + (path[idx][1] + 0.5) * c
+            tx, ty = self._cell_xy(g, *path[idx])
             d = math.hypot(tx - px, ty - py)
             if d < 1:
                 target = path[idx]
@@ -439,11 +716,12 @@ class Level:
                 target = path[idx]
             elif idx > 1:
                 break
-        tx, ty = g["ox"] + (target[0] + 0.5) * c, g["oy"] + (target[1] + 0.5) * c
-        via = "portal"
-        if door_at is not None and target == path[door_at]:
-            via = "door"
-        return ("route", via, remaining, (tx, ty))
+        tx, ty = self._cell_xy(g, *target)
+        via = "door" if door_at is not None and target == path[door_at] else "portal"
+        return {"via": via, "remaining": remaining, "point": (tx, ty), "goal": goal_kind, "line": None}
+
+    def find_route(self, keys, px, py, facing, opened=frozenset(), visited=frozenset()):
+        return self.plan(keys, px, py, opened, visited)
 
     def scenery(self, px: float, py: float, facing_deg: float, keys: set[int]) -> dict:
         face = math.radians(facing_deg)
@@ -475,16 +753,10 @@ class Level:
         route = None
         found = self.find_route(keys, px, py, facing_deg)
         if found is not None:
-            mode, via, remaining, point = found
-            if mode == "exit":
-                ex = [ln for ln in self.lines if ln.special in EXIT_ANY]
-                ln = min(ex, key=lambda e: self.line_distance(px, py, e)[0])
-                _, mx, my = self.line_distance(px, py, ln)
-                via = "exit"
-            else:
-                mx, my = point
+            mx, my = found["point"]
             route = {"bearing": self.bearing(px, py, facing_deg, mx, my),
-                     "distance": math.hypot(mx - px, my - py), "via": via, "remaining": remaining}
+                     "distance": math.hypot(mx - px, my - py), "via": found["via"],
+                     "remaining": found["remaining"]}
         ex = [ln for ln in self.lines if ln.special in EXIT_ANY]
         eb = ed = None
         if ex:
