@@ -878,7 +878,9 @@ class Level:
                 if sec.tag == hit.tag and sec.index not in self.doors:
                     around = [n.ceil for ln in sec.lines for n in (ln.front, ln.back)
                               if n is not None and n is not sec]
-                    self.doors[sec.index] = Door(sec, 1, min(around, default=sec.ceil) - 4)
+                    door = Door(sec, 1, min(around, default=sec.ceil) - 4)
+                    door.stay = hit.special == 103  # open and stay: 29 and 63 close again
+                    self.doors[sec.index] = door
         if hit.special in DOORS and hit.back is not None:
             need = DOOR_KEY.get(hit.special, 0)
             if keys is not None and need and need not in keys:
@@ -934,7 +936,7 @@ class Level:
             if door.direction == 1:
                 s.ceil = min(door.top, s.ceil + 2)
                 if s.ceil >= door.top:
-                    door.direction, door.wait = 0, 150
+                    door.direction, door.wait = 0, (10**9 if getattr(door, "stay", False) else 150)
             elif door.direction == 0:
                 door.wait -= 1
                 if door.wait <= 0:
