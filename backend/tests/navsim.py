@@ -37,6 +37,8 @@ SWITCHES = {
     134, 135, 136, 137, 138, 139, 140,
 }
 EXIT_USE = {11, 51}
+LIFT_USE = {21, 62, 122, 123}
+LIFT_WALK = {10, 88}
 EXIT_ANY = {11, 51, 52, 124}
 TELEPORT = {39, 97, 125, 126}
 PLAYER_TELEPORT = {39, 97}
@@ -159,6 +161,7 @@ class Level:
         self.start = (float(start[0]), float(start[1]), float(start[2]))
         self.doors: dict[int, Door] = {}
         self.taken: set = set()
+        self.plats: dict = {}
 
     # -- the map -------------------------------------------------------------------------------
 
@@ -818,7 +821,7 @@ class Level:
             use_target = {"kind": kind_of(hit.special), "open": self.gap_open(hit),
                           "locked": bool(key and key not in keys)}
         route = None
-        found = self.find_route(keys, px, py, facing_deg)
+        found = self.find_route(keys, px, py, facing_deg, self.open_tags())
         if found is not None:
             mx, my = found["point"]
             route = {"bearing": self.bearing(px, py, facing_deg, mx, my),
@@ -867,6 +870,8 @@ class Level:
             return None
         if hit.special in EXIT_USE:
             return "exit"
+        if hit.special in LIFT_USE:
+            self.start_plat(hit.tag)
         if hit.special in DOORS and hit.back is not None:
             need = DOOR_KEY.get(hit.special, 0)
             if keys is not None and need and need not in keys:
@@ -879,7 +884,41 @@ class Level:
                 self.doors[hit.back.index] = Door(hit.back, 1, top)
         return None
 
+    # -- lifts: down, wait, back up. Walk-over (10, 88) and switch (21, 62, 122, 123) triggers. -----
+
+    def start_plat(self, tag: int) -> None:
+        for sec in self.sectors:
+            if sec.tag != tag or tag == 0 or sec.index in self.plats:
+                continue
+            around = [n.floor for ln in sec.lines for n in (ln.front, ln.back)
+                      if n is not None and n is not sec]
+            low = min(around, default=sec.floor)
+            if low < sec.floor:
+                self.plats[sec.index] = {"sec": sec, "phase": "down", "low": low,
+                                         "high": sec.floor, "wait": 0}
+
+    def tick_plats(self) -> None:
+        for idx, pl in list(self.plats.items()):
+            sec = pl["sec"]
+            if pl["phase"] == "down":
+                sec.floor = max(pl["low"], sec.floor - 4)
+                if sec.floor <= pl["low"]:
+                    pl["phase"], pl["wait"] = "wait", 105
+            elif pl["phase"] == "wait":
+                pl["wait"] -= 1
+                if pl["wait"] <= 0:
+                    pl["phase"] = "up"
+            else:
+                sec.floor = min(pl["high"], sec.floor + 4)
+                if sec.floor >= pl["high"]:
+                    del self.plats[idx]
+
+    def open_tags(self) -> frozenset:
+        return frozenset(pl["sec"].tag for pl in self.plats.values()
+                         if pl["sec"].floor <= pl["low"] + STEP_HEIGHT)
+
     def tick_doors(self) -> None:
+        self.tick_plats()
         for idx, door in list(self.doors.items()):
             s = door.sector
             if door.direction == 1:
@@ -946,6 +985,7 @@ def play(level: Level, bot, max_s: float = 300.0, decision_tics: int = 8, trace=
     tic, best_hops, rules = 0, 1e9, {}
     keys: set[int] = set()
     level.taken = set()
+    level.plats = {}
     while tic < max_s * 35:
         sc = level.scenery(p.x, p.y, p.angle, keys)
         state = GameState(
@@ -967,8 +1007,13 @@ def play(level: Level, bot, max_s: float = 300.0, decision_tics: int = 8, trace=
             if intent == "use" and i == 0 and level.use(p.x, p.y, p.angle, keys) == "exit":
                 return {"outcome": "cleared", "tic": tic, "best_hops": 0, "rules": rules}
             active = hold is None or i < hold
+            ox, oy = p.x, p.y
             step_tic(level, p, intent if active and intent not in ("use", "fire") else None)
             tic += 1
+            if (ox, oy) != (p.x, p.y):
+                for ln in level.lines:
+                    if ln.special in LIFT_WALK and level._crosses(ox, oy, p.x, p.y, ln):
+                        level.start_plat(ln.tag)
             for t in level.things:
                 k = KEY_THINGS.get(t[3])
                 if k and k not in keys and abs(t[0] - p.x) < 36 and abs(t[1] - p.y) < 36:
