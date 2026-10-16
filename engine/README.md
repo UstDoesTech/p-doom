@@ -46,6 +46,6 @@ restarting with the same seed gives the same start, and turning right shrinks a 
 
 - Seeds only choose a starting point in Doom's 256-entry random table (the low byte sets the combat
   table, the next byte the cosmetic one). Two seeds 256 apart behave alike.
-- The WAD is the shareware `doom1.wad` (episode 1). It is fetched by SHA-1, never committed.
+- The WAD is the shareware `doom1.wad` (episode 1). It is fetched by SHA-1, never committed. The engine and the route planner work on any episode's maps; the CI checks only cover episode 1. The offline planner test (`backend/tests/test_navsim.py`) runs all 36 maps when `PDOOM_WAD` points at the Ultimate Doom `DOOM.WAD`: 33 plan through to the exit, E2M6, E3M6 and E4M9 do not yet.
 - Licence: doom-wasm is a Chocolate Doom fork under GPL-2.0. The built engine is a GPL work, so
   publish the corresponding source for whatever you deploy.

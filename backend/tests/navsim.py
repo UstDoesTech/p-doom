@@ -38,10 +38,13 @@ SWITCHES = {
 }
 EXIT_USE = {11, 51}
 EXIT_ANY = {11, 51, 52, 124}
-TELEPORT = {39, 97}
+TELEPORT = {39, 97, 125, 126}
+PLAYER_TELEPORT = {39, 97}
 LIGHT = {12, 13, 17, 35, 79, 80, 81, 104, 138, 139, 156, 157, 158, 159, 169, 170, 171, 172, 173, 174, 175, 176, 177, 178, 179, 180}
 KEY_THINGS = {5: 1, 40: 1, 6: 2, 39: 2, 13: 3, 38: 3}
 STAIRS = {7, 8, 100, 127}
+BOSS_TAGS = {666, 667}
+BOSS_THINGS = (3003, 16, 7)
 KEY_COST = 300.0
 GATE_COST = 150.0
 JUMP_COST = 100.0
@@ -241,7 +244,8 @@ class Level:
 
     def _trigger_tags(self) -> set[int]:
         if getattr(self, "_ttags", None) is None:
-            self._ttags = {ln.tag for ln in self.lines if ln.tag and is_trigger(ln.special)}
+            # 666 and 667 are moved when a map's bosses die (A_BossDeath), not by a line
+            self._ttags = {ln.tag for ln in self.lines if ln.tag and is_trigger(ln.special)} | BOSS_TAGS
         return self._ttags
 
     def _stair_sectors(self) -> dict[int, int]:
@@ -267,6 +271,21 @@ class Level:
                             todo.append(o)
             self._stairs = out
         return self._stairs
+
+    def _door_class(self, ln: Line) -> int | None:
+        """4 + key for a line that is a door, or the other face of one: a door sector starts shut
+        (floor = ceiling) and has its door special on only some of its lines."""
+        if ln.special in DOORS:
+            return 4 + DOOR_KEY.get(ln.special, 0)
+        if ln.back is None:
+            return None
+        out = None
+        for s in (ln.front, ln.back):
+            if s.floor == s.ceil:
+                keys = [DOOR_KEY.get(e.special, 0) for e in s.lines if e.special in DOORS]
+                if keys:
+                    out = max(out or 4, 4 + max(keys))
+        return out
 
     def _gate_tag(self, ln: Line) -> int | None:
         """The tag of the sector a trigger would have to move to make this line passable."""
@@ -322,14 +341,14 @@ class Level:
         hops: dict[tuple[int, int], list] = {}
         hop_in: dict[tuple[int, int], list] = {}
         gate_lines = [ln for ln in self.lines if ln.back is not None and not ln.flags & ML_BLOCKING
-                      and (ln.special in DOORS or (self._gate_tag(ln) is not None and (
+                      and (self._door_class(ln) is not None or (self._gate_tag(ln) is not None and (
                           not self.gap_open(ln) or abs(ln.front.floor - ln.back.floor) > STEP_HEIGHT)))]
         near_gate: set[tuple[int, int]] = set()
         for ln in gate_lines:
             near_gate.update(self._cells_near_line(g, ln, 48.0, any_side=True))
         for (ix, iy) in near_gate:
-            for dx in range(-2, 3):
-                for dy in range(-2, 3):
+            for dx in range(-3, 4):
+                for dy in range(-3, 4):
                     if max(abs(dx), abs(dy)) < 2:
                         continue
                     jx, jy = ix + dx, iy + dy
@@ -346,7 +365,7 @@ class Level:
         jump_in: dict[tuple[int, int], list[tuple[tuple[int, int], tuple[float, float]]]] = {}
         jumps: dict[tuple[int, int], tuple[tuple[int, int], Line]] = {}
         for ln in self.lines:
-            if ln.special not in TELEPORT or not ln.tag:
+            if ln.special not in PLAYER_TELEPORT or not ln.tag:
                 continue
             dest = next((t for t in self.things if t[3] == 14 and self.sector_at(float(t[0]), float(t[1])).tag == ln.tag), None)
             if dest is None:
@@ -449,7 +468,7 @@ class Level:
         box = WALK_BOX
         # a throat beside a door or a trigger-moved sector may be too tight for the full box
         for ln in self._lines_near(g, x, y, x, y, 48.0):
-            if (ln.special in DOORS or (ln.back is not None and self._gate_tag(ln) is not None
+            if (self._door_class(ln) is not None or (ln.back is not None and self._gate_tag(ln) is not None
                                         and not self.gap_open(ln))) and self.line_distance(x, y, ln)[0] < 40.0:
                 box = DOOR_BOX
                 break
@@ -458,7 +477,7 @@ class Level:
                 continue
             if ln.back is None or ln.flags & ML_BLOCKING:
                 return True
-            if ln.special in DOORS:
+            if self._door_class(ln) is not None:
                 continue
             if not self.gap_open(ln) or max(ln.front.floor, ln.back.floor) - z > STEP_HEIGHT:
                 if self._gate_tag(ln) is None:
@@ -475,6 +494,11 @@ class Level:
         u = ((ln.x1 - ax) * d1y - (ln.y1 - ay) * d1x) / denom
         return 0 <= t <= 1 and 0 <= u <= 1
 
+    @staticmethod
+    def _cross_t(ax, ay, bx, by, ln):
+        denom = (bx - ax) * ln.dy - (by - ay) * ln.dx
+        return ((ln.x1 - ax) * ln.dy - (ln.y1 - ay) * ln.dx) / denom
+
     def _edge_info(self, g, ix, iy, jx, jy):
         """None if the step between two cells can never be made, else (door, gates): the door
         class (0 none, 4 a door that needs no key, 5..7 a key door) and the tags of the sectors
@@ -482,13 +506,20 @@ class Level:
         ax, ay = self._cell_xy(g, ix, iy)
         bx, by = self._cell_xy(g, jx, jy)
         need, gates = 0, []
+        first_door = None  # (t, key class) of the first door line crossed
         for ln in self._lines_near(g, ax, ay, bx, by):
             if not self._crosses(ax, ay, bx, by, ln):
                 continue
             if ln.back is None or ln.flags & ML_BLOCKING:
                 return None
-            if ln.special in DOORS:
-                need = max(need, 4 + DOOR_KEY.get(ln.special, 0))
+            dc = self._door_class(ln)
+            if dc is not None:
+                # the key is the one on the face you press from: a door sector can need a key
+                # from one side and none from the other
+                t = self._cross_t(ax, ay, bx, by, ln)
+                cls = 4 + DOOR_KEY.get(ln.special, 0) if ln.special in DOORS and ln.side(ax, ay) == 0 else 4
+                if first_door is None or t < first_door[0]:
+                    first_door = (t, cls)
                 continue
             near, far = (ln.front, ln.back) if ln.side(ax, ay) == 0 else (ln.back, ln.front)
             if not self.gap_open(ln) or far.floor - near.floor > STEP_HEIGHT:
@@ -496,6 +527,8 @@ class Level:
                 if tag is None:
                     return None
                 gates.append(tag)
+        if first_door is not None:
+            need = first_door[1]
         return need, tuple(sorted(set(gates)))
 
     def _edge_cost(self, info, length, keys, opened, optimistic):
@@ -556,12 +589,14 @@ class Level:
         plain = [ln for ln in exits if ln.special != 51]
         cells = set()
         for ln in plain or exits:
-            cells.update(self._cells_near_line(g, ln, 40.0))
+            found = self._cells_near_line(g, ln, 40.0)
+            # a small alcove may have no cell centre that close: stand anywhere in reach
+            cells.update(found or self._cells_near_line(g, ln, 72.0))
         if cells:
             return cells, "exit", plain or exits
         # no exit line (last map of an episode): it ends when the boss dies
         for t in self.things:
-            if t[3] in (3003, 16, 7):
+            if t[3] in BOSS_THINGS:
                 c = self._nearest_walkable(g, float(t[0]), float(t[1]))
                 if c:
                     cells.add(c)
@@ -620,6 +655,13 @@ class Level:
         g = self._g
         kind, what = blocker
         cells: set = set()
+        if kind == "gate" and what in BOSS_TAGS:
+            for t in self.things:
+                if t[3] in BOSS_THINGS:
+                    c = self._nearest_walkable(g, float(t[0]), float(t[1]))
+                    if c:
+                        cells.add(c)
+            return (cells, "kill", []) if cells else None
         if kind == "key":
             for t in self.things:
                 if KEY_THINGS.get(t[3]) == what:
@@ -627,7 +669,9 @@ class Level:
             return (cells, "pickup", []) if cells else None
         lines = [ln for ln in self.lines if ln.tag == what and is_trigger(ln.special) and ln.index not in visited]
         for ln in lines:
-            cells.update(self._cells_near_line(g, ln, 40.0 if ln.special in SWITCHES else 24.0, any_side=ln.special not in SWITCHES))
+            use = ln.special in SWITCHES
+            found = self._cells_near_line(g, ln, 40.0 if use else 24.0, any_side=not use)
+            cells.update(found or self._cells_near_line(g, ln, 72.0 if use else 48.0, any_side=not use))
         return (cells, "switch", lines) if cells else None
 
     def plan(self, keys, px, py, opened=frozenset(), visited=frozenset()):

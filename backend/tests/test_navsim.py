@@ -46,10 +46,23 @@ def _plan_chain(level):
     return stages + [None]
 
 
-@pytest.mark.parametrize("name", [f"E1M{n}" for n in range(1, 10)])
+# Maps the planner cannot yet solve from the full Ultimate Doom WAD: a key or exit its model of
+# the map says is cut off (a pit island, a door that only opens from inside). Everything else,
+# including every shareware level, plans through to the exit.
+KNOWN_UNSOLVED = {"E2M6", "E3M6", "E4M9"}
+LEVELS = [f"E{e}M{m}" for e in range(1, 5) for m in range(1, 10)]
+
+
+@pytest.mark.parametrize("name", LEVELS)
 def test_every_level_has_a_route_from_the_start(name):
     import navsim
 
-    stages = _plan_chain(navsim.Level(WAD, name))
+    try:
+        level = navsim.Level(WAD, name)
+    except ValueError:
+        pytest.skip(f"{name} is not in this WAD")
+    if name in KNOWN_UNSOLVED:
+        pytest.xfail("known gap in the planner")
+    stages = _plan_chain(level)
     assert None not in stages, (name, stages)
     assert stages[-1] in ("exit", "kill")

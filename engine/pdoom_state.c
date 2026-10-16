@@ -428,7 +428,7 @@ static int is_exit_line(const line_t *l) { return l->special == 11 || l->special
 static int is_trigger(int sp)
 {
     switch (sp) {
-    case 0: case 11: case 51: case 52: case 124: case 48: case 39: case 97:
+    case 0: case 11: case 51: case 52: case 124: case 48: case 39: case 97: case 125: case 126:
     case 12: case 13: case 17: case 35: case 79: case 80: case 81: case 104: case 138: case 139:
     case 156: case 157: case 158: case 159: case 169: case 170: case 171: case 172: case 173:
     case 174: case 175: case 176: case 177: case 178: case 179: case 180:
@@ -457,6 +457,26 @@ static double cell_x(int ix) { return g_ox + (ix + 0.5) * CELL; }
 static double cell_y(int iy) { return g_oy + (iy + 0.5) * CELL; }
 static int side_of(const line_t *l, double x, double y) { return P_PointOnLineSide(to_fixed(x), to_fixed(y), (line_t *)l); }
 
+/* 4 + key for a line that is a door or the other face of one, else -1. A door sector starts shut
+ * (floor = ceiling) and has its door special on only some of its lines. */
+static int door_class(const line_t *l)
+{
+    const sector_t *s[2];
+    int k, e, out = -1;
+    if (is_door(l->special)) return 4 + door_key(l->special);
+    if (l->backsector == NULL) return -1;
+    s[0] = l->frontsector;
+    s[1] = l->backsector;
+    for (k = 0; k < 2; k++) {
+        int key = -1;
+        if (s[k]->floorheight != s[k]->ceilingheight) continue;
+        for (e = 0; e < s[k]->linecount; e++)
+            if (is_door(s[k]->lines[e]->special) && door_key(s[k]->lines[e]->special) > key) key = door_key(s[k]->lines[e]->special);
+        if (key >= 0 && 4 + key > out) out = 4 + key;
+    }
+    return out;
+}
+
 /* The tag of the sector a trigger would have to move to make this line passable, or 0. */
 static int gate_tag(const line_t *l)
 {
@@ -484,7 +504,7 @@ static int shut_either_way(const line_t *l)
 static int is_gate_line(const line_t *l)
 {
     if (l->backsector == NULL || (l->flags & ML_BLOCKING)) return 0;
-    if (is_door(l->special)) return 1;
+    if (door_class(l) >= 0) return 1;
     return shut_either_way(l) && gate_tag(l) != 0;
 }
 
@@ -534,7 +554,7 @@ static int cell_walkable(double x, double y)
             continue;
         if (!line_touches_box(l, x, y, box)) continue;
         if (l->backsector == NULL || (l->flags & ML_BLOCKING)) return 0;
-        if (is_door(l->special)) continue;
+        if (door_class(l) >= 0) continue;
         hi = (double)max_fixed(l->frontsector->floorheight, l->backsector->floorheight) / 65536.0;
         if (!gap_open(l) || hi - z > 24.0) {
             if (gate_tag(l) == 0) return 0;
@@ -549,7 +569,8 @@ static int cell_walkable(double x, double y)
 static int edge_info(double ax, double ay, double bx, double by, short *gates)
 {
     double d1x = bx - ax, d1y = by - ay;
-    int i, need = 0, ng = 0;
+    int i, need = 0, ng = 0, first_class = -1;
+    double first_t = 1e30;
     gates[0] = gates[1] = -1;
     for (i = 0; i < numlines; i++) {
         const line_t *l = &lines[i];
@@ -563,9 +584,14 @@ static int edge_info(double ax, double ay, double bx, double by, short *gates)
         u = ((lx1(l) - ax) * d1y - (ly1(l) - ay) * d1x) / denom;
         if (t < 0.0 || t > 1.0 || u < 0.0 || u > 1.0) continue;
         if (l->backsector == NULL || (l->flags & ML_BLOCKING)) return 255;
-        if (is_door(l->special)) {
-            int k = 4 + door_key(l->special);
-            if (k > need) need = k;
+        if (door_class(l) >= 0) {
+            /* the key is the one on the face you press from: a door sector can need a key from
+             * one side and none from the other */
+            int cls = is_door(l->special) && side_of(l, ax, ay) == 0 ? 4 + door_key(l->special) : 4;
+            if (t < first_t) {
+                first_t = t;
+                first_class = cls;
+            }
             continue;
         }
         {
@@ -578,6 +604,7 @@ static int edge_info(double ax, double ay, double bx, double by, short *gates)
             }
         }
     }
+    if (first_class >= 0) need = first_class;
     return need | (ng ? GATED : 0);
 }
 
@@ -655,6 +682,7 @@ static void build_tags(void)
             }
         }
     }
+    g_trig_tag[666] = g_trig_tag[667] = 1; /* moved when a map's bosses die (A_BossDeath), not by a line */
     g_ngates = 0;
     for (i = 0; i < numlines && g_ngates < MAX_GATES; i++)
         if (is_gate_line(&lines[i])) g_gate_lines[g_ngates++] = (short)i;
@@ -713,8 +741,8 @@ static int build_grid(void)
                 c = iy * g_w + ix;
                 if (!g_walk[c] || (g_flag[c] & 8) || seg_distance(cell_x(ix), cell_y(iy), gl, &cx, &cy) > 48.0) continue;
                 g_flag[c] |= 8; /* each cell once, whichever gate line found it */
-                for (dx = -2; dx <= 2; dx++)
-                    for (dy = -2; dy <= 2; dy++) {
+                for (dx = -3; dx <= 3; dx++)
+                    for (dy = -3; dy <= 3; dy++) {
                         int jx = ix + dx, jy = iy + dy, kind;
                         short gates[2];
                         if (abs(dx) < 2 && abs(dy) < 2) continue;
@@ -773,6 +801,11 @@ static int keys_mask(const player_t *p)
     return (has_key(p, 1) ? 1 : 0) | (has_key(p, 2) ? 2 : 0) | (has_key(p, 3) ? 4 : 0);
 }
 
+static int is_boss(const mobj_t *m)
+{
+    return (m->type == MT_BRUISER || m->type == MT_CYBORG || m->type == MT_SPIDER) && m->health > 0;
+}
+
 /* Which trigger tags still have a line to press, and whether each gate line is crossable now. */
 static void refresh_live(void)
 {
@@ -780,6 +813,11 @@ static void refresh_live(void)
     memset(g_live_tag, 0, sizeof g_live_tag);
     for (i = 0; i < numlines; i++)
         if (lines[i].tag > 0 && lines[i].tag < MAX_TAGS && is_trigger(lines[i].special)) g_live_tag[lines[i].tag] = 1;
+    {
+        thinker_t *th;
+        for (th = thinkercap.next; th != &thinkercap; th = th->next)
+            if (th->function.acp1 == (actionf_p1)P_MobjThinker && is_boss((mobj_t *)th)) g_live_tag[666] = g_live_tag[667] = 1;
+    }
     for (i = 0; i < g_ngates; i++) {
         const line_t *l = &lines[g_gate_lines[i]];
         int tag = gate_tag(l), side;
@@ -1052,6 +1090,27 @@ static int key_of_sprite(spritenum_t s)
     }
 }
 
+/* Walk to a boss. A map's bosses dying also moves the sectors tagged 666 or 667. */
+static int goals_boss(void)
+{
+    thinker_t *th;
+    g_ngoal = g_nglines = g_ngpts = 0;
+    g_goal_kind = GOAL_KILL;
+    for (th = thinkercap.next; th != &thinkercap; th = th->next) {
+        mobj_t *m;
+        if (th->function.acp1 != (actionf_p1)P_MobjThinker) continue;
+        m = (mobj_t *)th;
+        if (!is_boss(m)) continue;
+        add_goal(nearest_walkable((double)m->x / 65536.0, (double)m->y / 65536.0));
+        if (g_ngpts < 16) {
+            g_gpts[g_ngpts][0] = (double)m->x / 65536.0;
+            g_gpts[g_ngpts][1] = (double)m->y / 65536.0;
+            g_ngpts++;
+        }
+    }
+    return g_ngoal > 0;
+}
+
 static void goals_exit(void)
 {
     int i, pass;
@@ -1062,28 +1121,18 @@ static void goals_exit(void)
             const line_t *e = &lines[i];
             if (!is_exit_line(e) || e->frontsector == NULL) continue;
             if (pass == 0 && e->special == 51) continue; /* the secret exit only if there is no other */
-            goal_cells_near_line(e, 40.0, 0);
+            {
+                int before = g_ngoal;
+                goal_cells_near_line(e, 40.0, 0);
+                /* a small alcove may have no cell centre that close: stand anywhere in reach */
+                if (g_ngoal == before) goal_cells_near_line(e, 72.0, 0);
+            }
             if (g_nglines < 48) g_glines[g_nglines++] = e;
         }
     if (g_ngoal > 0) return;
     /* no exit line (the last map of each episode): it ends when the boss dies. Barons on E1M8,
      * the Cyberdemon on E2M8 and E4M6, the Spider Mastermind on E3M8 and E4M8. */
-    g_goal_kind = GOAL_KILL;
-    {
-        thinker_t *th;
-        for (th = thinkercap.next; th != &thinkercap; th = th->next) {
-            mobj_t *m;
-            if (th->function.acp1 != (actionf_p1)P_MobjThinker) continue;
-            m = (mobj_t *)th;
-            if ((m->type != MT_BRUISER && m->type != MT_CYBORG && m->type != MT_SPIDER) || m->health <= 0) continue;
-            add_goal(nearest_walkable((double)m->x / 65536.0, (double)m->y / 65536.0));
-            if (g_ngpts < 16) {
-                g_gpts[g_ngpts][0] = (double)m->x / 65536.0;
-                g_gpts[g_ngpts][1] = (double)m->y / 65536.0;
-                g_ngpts++;
-            }
-        }
-    }
+    goals_boss();
 }
 
 static int goals_key(int k)
@@ -1109,12 +1158,17 @@ static int goals_key(int k)
 static int goals_trigger(int tag, int now)
 {
     int i;
+    if (tag == 666 || tag == 667) return goals_boss();
     g_ngoal = g_nglines = g_ngpts = 0;
     g_goal_kind = GOAL_TRIGGER;
     for (i = 0; i < numlines; i++) {
         const line_t *l = &lines[i];
         if (l->tag != tag || !is_trigger(l->special) || g_vis_until[i] > now) continue;
-        goal_cells_near_line(l, is_switch(l->special) ? 40.0 : 24.0, !is_switch(l->special));
+        {
+            int use = is_switch(l->special), before = g_ngoal;
+            goal_cells_near_line(l, use ? 40.0 : 24.0, !use);
+            if (g_ngoal == before) goal_cells_near_line(l, use ? 72.0 : 48.0, !use);
+        }
         if (g_nglines < 48) g_glines[g_nglines++] = l;
     }
     return g_ngoal > 0;
