@@ -25,7 +25,8 @@ export interface RunnerConfig {
   decisionIntervalMs: number;
   /** Sample one telemetry event every this many tics. */
   eventEveryTics: number;
-  /** Game-time cap in seconds. The session ends as a timeout. */
+  /** Game-time cap in seconds. The session ends as a timeout. 0 means no cap: play until the
+   * level is cleared or the player dies, or Stop is pressed. */
   timeoutS: number;
   /** Milliseconds between loop ticks. */
   tickMs?: number;
@@ -125,7 +126,10 @@ export class SessionRunner {
       try {
         const decision = await api.decide(session.session_id, state, shot);
         if (done) return;
-        if (decision.intent) reflex.setIntent(decision.intent);
+        if (decision.intent) {
+          const hold = decision.hold_tics;
+          reflex.setIntent(decision.intent, hold ? engine.getState().tic + hold : null);
+        }
         hooks.onDecision?.(decision, state);
       } catch (e) {
         // The server may still log this decision. It is counted here as well so the session row
@@ -173,10 +177,11 @@ export class SessionRunner {
           if (this.abandoned) return finish("abandoned");
           if (this.aborted) return finish("aborted");
           if (status !== "running") return finish(status);
-          if ((state.tic - startTic) / TIC_RATE >= cfg.timeoutS) return finish("timeout");
+          if (cfg.timeoutS > 0 && (state.tic - startTic) / TIC_RATE >= cfg.timeoutS)
+            return finish("timeout");
 
           if (!isHuman) {
-            reflex.apply();
+            reflex.apply(state.tic);
             if (!inFlight && performance.now() - lastDecisionAt >= cfg.decisionIntervalMs) {
               inFlight = true;
               void decide(state);

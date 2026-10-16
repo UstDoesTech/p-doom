@@ -44,4 +44,24 @@ describe("ReflexLayer", () => {
   it("maps every intent to at least one key", () => {
     for (const intent of INTENTS) expect(INTENT_KEYS[intent].length).toBeGreaterThan(0);
   });
+
+  it("lets go of the keys when the hold runs out", () => {
+    const engine = fake();
+    const reflex = new ReflexLayer(engine);
+    reflex.setIntent("turn_right", 110);
+    reflex.apply(100);
+    reflex.apply(109);
+    expect(engine.calls).toEqual([["right", true]]);
+    reflex.apply(110);
+    expect(engine.calls.at(-1)).toEqual(["right", false]);
+    expect(reflex.current()).toBeNull();
+  });
+
+  it("holds an intent without a limit until the next one", () => {
+    const engine = fake();
+    const reflex = new ReflexLayer(engine);
+    reflex.setIntent("advance");
+    reflex.apply(1_000_000);
+    expect(engine.calls).toEqual([["forward", true]]);
+  });
 });

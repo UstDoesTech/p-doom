@@ -65,6 +65,18 @@ jobs:
           out=$(timeout 290 node verify_app.mjs "$(cat $RUNNER_TEMP/url)" "$(cat $RUNNER_TEMP/tok)" 2>&1)
           code=$?
           echo "::notice title=browser session exit=${code}::$(printf '%s' "$out" | tail -c 3500 | tr '\n' ' ')"
+      - name: rule_bot navigates E1M1 (90 s of game time)
+        run: |
+          cd "$RUNNER_TEMP/v"
+          set +e
+          out=$(PDOOM_SHOT=1 timeout 280 node verify_app.mjs "$(cat $RUNNER_TEMP/url)" "$(cat $RUNNER_TEMP/tok)" rule_bot wasm 90 2>&1)
+          echo "::notice title=rule_bot E1M1 90 s exit=$?::$(printf '%s' "$out" | head -c 1400 | tr '\n' ' ')"
+          res=$(printf '%s' "$out" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const r=JSON.parse(s.slice(s.indexOf("{")));console.log(r.result+" | "+(r.hud||"").replace(/\n/g," "))}catch(e){console.log("unparsed")}})')
+          echo "::notice title=rule_bot E1M1 result::${res}"
+          shot=$(printf '%s' "$out" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{console.log(JSON.parse(s.slice(s.indexOf("{"))).shot||"")}catch(e){console.log("")}})')
+          echo "::notice title=rule_bot E1M1 final frame (jpeg base64)::${shot:0:60000}"
+          tr=$(printf '%s' "$out" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const r=JSON.parse(s.slice(s.indexOf("{")));console.log((r.trace||[]).map(t=>JSON.stringify(t)).join(";"))}catch(e){console.log("no trace")}})')
+          echo "::notice title=rule_bot E1M1 trace (tic x y angle intent rule route walls_ahead)::$(printf '%s' "$tr" | tail -c 6000)"
       - name: Play the other players and a stopped game (mock arena)
         run: |
           cd "$RUNNER_TEMP/v"
@@ -90,6 +102,15 @@ jobs:
           echo "::notice title=lakebase latest sessions::${out:-none}"
           tot=$(scripts/pg.sh -At -c "select (select count(*) from pdoom.doom_sessions)||' sessions, '||(select count(*) from pdoom.doom_events)||' events, '||(select count(*) from pdoom.doom_decisions)||' decisions'" 2>&1 | grep -v '^::add-mask')
           echo "::notice title=lakebase totals::${tot}"
+
+      - name: What the rule_bot did on E1M1
+        if: always()
+        run: |
+          set +e
+          out=$(scripts/pg.sh -At -F' ' -c "with s as (select session_id from pdoom.doom_sessions where player_type='rule_bot' and engine='wasm' and duration_s > 60 order by started_at desc limit 1) select coalesce(d.raw_output->>'rule','-'), count(*) from pdoom.doom_decisions d join s using (session_id) group by 1 order by 2 desc" 2>&1 | grep -v '^::add-mask' | tr '\n' ';')
+          echo "::notice title=rule_bot rules fired (long session)::${out:-none}"
+          pos=$(scripts/pg.sh -At -F' ' -c "with s as (select session_id from pdoom.doom_sessions where player_type='rule_bot' and engine='wasm' and duration_s > 60 order by started_at desc limit 1) select tic, round(x::numeric), round(y::numeric), health from pdoom.doom_events e join s using (session_id) where tic % 175 < 5 order by tic" 2>&1 | grep -v '^::add-mask' | tr '\n' ';')
+          echo "::notice title=rule_bot track (tic x y health)::${pos:-none}"
 
       - name: Decision health and transports per player
         if: always()

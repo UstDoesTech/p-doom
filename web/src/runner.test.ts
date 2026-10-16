@@ -130,6 +130,14 @@ describe("SessionRunner", () => {
     expect(log.ended[0].outcome).toBe("timeout");
   });
 
+  it("has no cap when timeoutS is 0 and plays on until the game ends", async () => {
+    const engine = new FakeEngine(400); // dies after 400 tics, far past a 2 s cap
+    const { api } = fakeApi(engine);
+    const result = await new SessionRunner(engine, api, cfg({ timeoutS: 0 })).run(canvas);
+    expect(result.outcome).toBe("died");
+    expect(result.durationS).toBeGreaterThan(2);
+  });
+
   it("records a stopped session as aborted, with its events", async () => {
     const engine = new FakeEngine();
     const { api, log } = fakeApi(engine);

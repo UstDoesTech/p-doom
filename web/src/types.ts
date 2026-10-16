@@ -56,6 +56,33 @@ export interface Pickup {
   bearing: number;
 }
 
+export interface Walls {
+  ahead: number;
+  ahead_right: number;
+  right: number;
+  behind_right: number;
+  behind: number;
+  behind_left: number;
+  left: number;
+  ahead_left: number;
+}
+
+export interface Interactable {
+  kind: string;
+  distance: number;
+  bearing: number;
+  facing: boolean;
+  open: boolean;
+  locked: boolean;
+}
+
+export interface Route {
+  bearing: number;
+  distance: number;
+  via: string;
+  remaining: number;
+}
+
 export interface GameState {
   tic: number;
   level: string;
@@ -64,6 +91,13 @@ export interface GameState {
   enemies: Enemy[];
   pickups: Pickup[];
   exit_bearing: number | null;
+  exit_distance?: number | null;
+  /** Scenery. Only the Doom engine sends these. */
+  walls?: Walls | null;
+  keys?: string[];
+  interactables?: Interactable[];
+  use_target?: { kind: string; open: boolean; locked: boolean } | null;
+  route?: Route | null;
 }
 
 /** Keys the reflex layer and human input work in. Mapped to Doom's default bindings. */
@@ -79,6 +113,8 @@ export type GameKey =
 
 export interface Decision {
   intent: Intent | null;
+  /** Game tics to hold the intent before letting go; null holds it until the next decision. */
+  hold_tics?: number | null;
   confidence: number | null;
   threat_prob: number | null;
   danger_score: number | null;
