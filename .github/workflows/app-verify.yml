@@ -71,6 +71,8 @@ jobs:
           set +e
           out=$(PDOOM_SHOT=1 timeout 280 node verify_app.mjs "$(cat $RUNNER_TEMP/url)" "$(cat $RUNNER_TEMP/tok)" rule_bot wasm 140 2>&1)
           echo "::notice title=rule_bot E1M1 140 s exit=$?::$(printf '%s' "$out" | head -c 1400 | tr '\n' ' ')"
+          res=$(printf '%s' "$out" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const r=JSON.parse(s.slice(s.indexOf("{")));console.log(r.result+" | "+(r.hud||"").replace(/\n/g," "))}catch(e){console.log("unparsed")}})')
+          echo "::notice title=rule_bot E1M1 result::${res}"
           shot=$(printf '%s' "$out" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{console.log(JSON.parse(s.slice(s.indexOf("{"))).shot||"")}catch(e){console.log("")}})')
           echo "::notice title=rule_bot E1M1 final frame (jpeg base64)::${shot:0:60000}"
           tr=$(printf '%s' "$out" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const r=JSON.parse(s.slice(s.indexOf("{")));console.log((r.trace||[]).map(t=>JSON.stringify(t)).join(";"))}catch(e){console.log("no trace")}})')
