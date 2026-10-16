@@ -64,4 +64,19 @@ describe("ReflexLayer", () => {
     reflex.apply(1_000_000);
     expect(engine.calls).toEqual([["forward", true]]);
   });
+
+  it("stopMoving lets go of a walk or turn but keeps firing", () => {
+    const keys: Array<[string, boolean]> = [];
+    const r = new ReflexLayer({ setKey: (k, d) => void keys.push([k, d]) });
+    r.setIntent("advance");
+    r.apply();
+    r.stopMoving();
+    r.apply();
+    expect(keys).toEqual([["forward", true], ["forward", false]]);
+    r.setIntent("fire");
+    r.apply();
+    r.stopMoving();
+    r.apply();
+    expect(r.current()).toBe("fire");
+  });
 });

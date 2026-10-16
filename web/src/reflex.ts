@@ -30,6 +30,18 @@ export class ReflexLayer {
     this.until = intent && untilTic != null ? untilTic : null;
   }
 
+  /**
+   * Lets go of a movement key and keeps fire. Used in realtime mode while a slow player is still
+   * thinking: the game goes on, and a turn or walk held on an old answer carries the player away
+   * from the spot the new answer is about.
+   */
+  stopMoving(): void {
+    if (this.intent && this.intent !== "fire" && this.intent !== "use") {
+      this.intent = null;
+      this.until = null;
+    }
+  }
+
   current(): Intent | null {
     return this.intent;
   }

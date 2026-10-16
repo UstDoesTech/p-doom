@@ -49,7 +49,7 @@ class FakeEngine implements Engine {
   stop() {}
 }
 
-function fakeApi(engine: FakeEngine, failDecide = false, failCreate = false) {
+function fakeApi(engine: FakeEngine, failDecide = false, failCreate = false, delayMs = 0) {
   const log = {
     decidedWhilePaused: [] as boolean[],
     events: 0,
@@ -73,6 +73,7 @@ function fakeApi(engine: FakeEngine, failDecide = false, failCreate = false) {
     },
     decide: async () => {
       log.decidedWhilePaused.push(engine.paused);
+      if (delayMs) await new Promise((r) => setTimeout(r, delayMs));
       if (failDecide) throw new ApiTimeout("/sessions/s1/decide", 25000);
       return decision;
     },
@@ -180,6 +181,25 @@ describe("SessionRunner", () => {
     const { api, log } = fakeApi(engine);
     await new SessionRunner(engine, api, cfg({ mode: "realtime" })).run(canvas);
     expect(log.decidedWhilePaused.some(Boolean)).toBe(false);
+  });
+
+  it("stops a walking player while a slow decision is pending in realtime mode", async () => {
+    const presses: boolean[] = [];
+    const engine = new FakeEngine(3000);
+    engine.setKey = (k, d) => {
+      if (k === "forward") presses.push(d);
+    };
+    const { api } = fakeApi(engine, false, false, 80);
+    const walk = await api.decide.bind(api);
+    api.decide = async (...a) => ({ ...(await walk(...a)), intent: "advance" });
+    await new SessionRunner(
+      engine,
+      api,
+      cfg({ mode: "realtime", stopAfterMs: 10 }),
+    ).run(canvas);
+    // Without the stop the same intent is held and forward is pressed once. With it, each slow
+    // decision lets go of the key and the answer presses it again.
+    expect(presses.filter(Boolean).length).toBeGreaterThanOrEqual(2);
   });
 
   it("counts decision timeouts on the session and keeps the game moving", async () => {

@@ -18,6 +18,9 @@ import type {
 export interface RunnerConfig {
   playerType: PlayerType;
   mode: Mode;
+  /** Realtime only: a decision still pending after this long stops the player moving until it
+   * lands. Default 300 ms. Players that answer faster never notice it. */
+  stopAfterMs?: number;
   engine: EngineKind;
   level: string;
   seed: number;
@@ -123,6 +126,10 @@ export class SessionRunner {
     const decide = async (state: GameState) => {
       const shot = cfg.playerType === "vision_llm" ? engine.screenshot() : null;
       if (cfg.mode === "paused") engine.pause();
+      const stopTimer =
+        cfg.mode === "realtime"
+          ? setTimeout(() => reflex.stopMoving(), cfg.stopAfterMs ?? 300)
+          : undefined;
       try {
         const decision = await api.decide(session.session_id, state, shot);
         if (done) return;
@@ -137,6 +144,7 @@ export class SessionRunner {
         if (e instanceof ApiTimeout) decisionTimeouts += 1;
         hooks.onError?.(e instanceof Error ? e.message : String(e));
       } finally {
+        clearTimeout(stopTimer);
         if (cfg.mode === "paused" && !done) engine.resume();
         lastDecisionAt = performance.now();
         inFlight = false;
