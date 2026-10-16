@@ -84,6 +84,11 @@ jobs:
           code=$?
           echo "::notice title=bundle deploy exit=${code}::$(printf '%s' "$out" | tail -c 1500 | tr '\n' '|')"
           exit $code
+      - name: Lakebase endpoint diagnostics
+        continue-on-error: true
+        run: |
+          databricks postgres get-endpoint projects/pdoom/branches/production/endpoints/primary -o json | jq -c . | cut -c1-1500 | sed 's/^/::notice title=endpoint json::/'
+          databricks postgres update-endpoint --help 2>&1 | head -40 | tr '\n' '|' | sed 's/^/::notice title=update-endpoint help::/'
       - name: Lakebase tables and the app's grants
         run: |
           set +e
