@@ -79,13 +79,18 @@ try {
     report.error = await page.locator(".error").innerText().catch(() => "");
     report.hud = await page.locator("dl").first().innerText().catch(() => "");
     report.log = await page.locator(".log").innerText().catch(() => "");
+    if (process.env.PDOOM_SHOT) {
+      // A small JPEG of the game canvas, to see where the bot ended up.
+      const buf = await page.locator("canvas").first().screenshot({ type: "jpeg", quality: 35 }).catch(() => null);
+      if (buf) report.shot = buf.toString("base64");
+    }
   }
 } catch (e) {
   report.exception = String(e).slice(0, 400);
 } finally {
   clearTimeout(timer);
   // Every 8th decision plus the last 30, to keep the line short.
-  report.trace = trace.filter((_, i) => i % 8 === 0 || i >= trace.length - 30);
+  report.trace = trace.filter((_, i) => i % 16 === 0 || i >= trace.length - 14);
   console.log(JSON.stringify(report));
   await browser.close();
 }
