@@ -126,7 +126,9 @@ class AiDecideApi:
 MOVING = (Intent.advance, Intent.retreat, Intent.strafe_left, Intent.strafe_right)
 STUCK_UNITS_PER_TIC = 2.0  # asked to walk, it should cover at least this per tic held
 UNSTICK_AFTER = 2  # decisions in a row without moving before the model is overridden
-UNSTICK_HOLD = 10
+UNSTICK_HOLD = 14
+JAM_TICS = 140  # about four seconds of game time
+JAM_UNITS = 40.0  # less net movement than this over JAM_TICS, whatever the feet were doing
 
 
 @dataclass
@@ -137,6 +139,11 @@ class _Track:
     last: Intent | None = None
     hold: int | None = None
     stuck: int = 0
+    anchor_x: float = 0.0
+    anchor_y: float = 0.0
+    anchor_tic: int = -1
+    jam: bool = False
+    overrides: int = 0  # consecutive decisions taken from the model
 
 
 class AiDecidePlayer:
@@ -195,12 +202,27 @@ class AiDecidePlayer:
             track.stuck = 0
 
         fighting = any(e.line_of_sight and e.distance <= ENGAGE_RANGE for e in state.enemies)
-        if track.stuck >= UNSTICK_AFTER and not fighting:
+        # Net movement over a window catches what the per-step check cannot: sliding a few units
+        # along a barrel each step looks like progress while the player goes nowhere.
+        if track.anchor_tic < 0:
+            track.anchor_x, track.anchor_y, track.anchor_tic = p.x, p.y, state.tic
+        else:
+            moved = math.hypot(p.x - track.anchor_x, p.y - track.anchor_y)
+            if moved >= JAM_UNITS:  # clear of it: start a fresh window here
+                track.jam = False
+                track.anchor_x, track.anchor_y, track.anchor_tic = p.x, p.y, state.tic
+            elif state.tic - track.anchor_tic >= JAM_TICS:
+                track.jam = not fighting
+                track.anchor_x, track.anchor_y, track.anchor_tic = p.x, p.y, state.tic
+        if fighting:
+            track.jam = False
+        if (track.stuck >= UNSTICK_AFTER or track.jam) and not fighting:
+            step = track.overrides % 5
+            track.overrides += 1
             bearing = state.route.bearing if state.route else None
             left_first = bearing is not None and bearing < 0
             first = Intent.strafe_left if left_first else Intent.strafe_right
             other = Intent.strafe_right if first == Intent.strafe_left else Intent.strafe_left
-            step = (track.stuck - UNSTICK_AFTER) % 5
             intent, hold = [
                 (first, UNSTICK_HOLD),
                 (Intent.advance, UNSTICK_HOLD),
@@ -214,6 +236,7 @@ class AiDecidePlayer:
                 **(out.get("assist") or {}),
                 "unstick": {
                     "stuck": track.stuck,
+                    "jam": track.jam,
                     "model_intent": str(decision.intent),
                     "step": step,
                 },
@@ -222,6 +245,8 @@ class AiDecidePlayer:
                 update={"intent": intent, "hold_tics": hold, "raw_output": out}
             )
 
+        else:
+            track.overrides = 0
         track.tic, track.x, track.y = state.tic, p.x, p.y
         track.last, track.hold = decision.intent, decision.hold_tics
         return decision
