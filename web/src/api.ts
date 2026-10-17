@@ -27,8 +27,8 @@ export class ApiTimeout extends ApiError {
   }
 }
 
-/** Long enough for ai_decide to fall back from REST to SQL; short enough that a paused game does
- * not sit frozen on a hung server. */
+/** Long enough for ai_decide to fall back from REST to SQL; short enough that a hung server
+ * does not leave the player standing still for long. */
 export const DECIDE_TIMEOUT_MS = 25_000;
 
 async function call<T>(path: string, init?: RequestInit, timeoutMs?: number): Promise<T> {

@@ -10,15 +10,13 @@ import type {
   EventIn,
   GameState,
   Intent,
-  Mode,
   Outcome,
   PlayerType,
 } from "./types";
 
 export interface RunnerConfig {
   playerType: PlayerType;
-  mode: Mode;
-  /** Realtime only: a decision still pending after this long stops the player moving until it
+  /** A decision still pending after this long stops the player moving until it
    * lands. Default 300 ms. Players that answer faster never notice it. */
   stopAfterMs?: number;
   engine: EngineKind;
@@ -91,14 +89,11 @@ export class SessionRunner {
     await engine.start(canvas, { level: cfg.level, seed: cfg.seed });
     let session: { session_id: string };
     try {
-      if (cfg.mode === "paused" && !engine.canPause()) {
-        throw new Error("This engine build cannot pause, so paused mode would be recorded wrongly.");
-      }
       // Hold the game still while the session registers, so nobody plays unattended.
       hold();
       session = await api.createSession({
         player_type: cfg.playerType,
-        mode: cfg.mode,
+        mode: "realtime",
         engine: cfg.engine,
         level: cfg.level,
         seed: cfg.seed,
@@ -125,11 +120,9 @@ export class SessionRunner {
 
     const decide = async (state: GameState) => {
       const shot = cfg.playerType === "vision_llm" ? engine.screenshot() : null;
-      if (cfg.mode === "paused") engine.pause();
-      const stopTimer =
-        cfg.mode === "realtime"
-          ? setTimeout(() => reflex.stopMoving(), cfg.stopAfterMs ?? 300)
-          : undefined;
+      // The game keeps running while the player thinks. A slow answer stops the walk meanwhile,
+      // so the held key does not carry on past where the state was read.
+      const stopTimer = setTimeout(() => reflex.stopMoving(), cfg.stopAfterMs ?? 300);
       try {
         const decision = await api.decide(session.session_id, state, shot);
         if (done) return;
@@ -145,7 +138,6 @@ export class SessionRunner {
         hooks.onError?.(e instanceof Error ? e.message : String(e));
       } finally {
         clearTimeout(stopTimer);
-        if (cfg.mode === "paused" && !done) engine.resume();
         lastDecisionAt = performance.now();
         inFlight = false;
       }

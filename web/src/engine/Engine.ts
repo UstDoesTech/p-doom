@@ -9,7 +9,8 @@ export interface Engine {
   status(): EngineStatus;
   kills(): number;
   setKey(key: GameKey, down: boolean): void;
-  /** False when the engine cannot honour paused mode. The runner refuses to record such sessions. */
+  /** False until the engine has booted. The runner holds the game still while a session registers,
+   * so nobody plays unattended; it does not pause for decisions, every session is realtime. */
   canPause(): boolean;
   pause(): void;
   resume(): void;

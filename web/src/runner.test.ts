@@ -55,6 +55,7 @@ function fakeApi(engine: FakeEngine, failDecide = false, failCreate = false, del
     events: 0,
     ended: [] as Array<{ outcome: string; kills: number; timeouts: number }>,
     created: 0,
+    modes: [] as string[],
   };
   const decision: Decision = {
     intent: "fire",
@@ -66,8 +67,9 @@ function fakeApi(engine: FakeEngine, failDecide = false, failCreate = false, del
   };
   const api: Api = {
     players: async () => [],
-    createSession: async () => {
+    createSession: async (body) => {
       log.created += 1;
+      log.modes.push(body.mode);
       if (failCreate) throw new Error("503 unavailable");
       return { session_id: "s1", model_version: "t" };
     },
@@ -96,7 +98,6 @@ function fakeApi(engine: FakeEngine, failDecide = false, failCreate = false, del
 
 const cfg = (over: Partial<RunnerConfig> = {}): RunnerConfig => ({
   playerType: "rule_bot",
-  mode: "paused",
   engine: "mock",
   level: "E1M1",
   seed: 1,
@@ -110,7 +111,7 @@ const cfg = (over: Partial<RunnerConfig> = {}): RunnerConfig => ({
 const canvas = {} as HTMLCanvasElement;
 
 describe("SessionRunner", () => {
-  it("records a death, pauses the game around every decision and flushes events", async () => {
+  it("records a death, sends every session as realtime and flushes events", async () => {
     const engine = new FakeEngine(100);
     const { api, log } = fakeApi(engine);
     const result = await new SessionRunner(engine, api, cfg()).run(canvas);
@@ -119,7 +120,8 @@ describe("SessionRunner", () => {
     expect(log.ended).toEqual([{ outcome: "died", kills: 2, timeouts: 0 }]);
     expect(log.events).toBeGreaterThan(5);
     expect(log.decidedWhilePaused.length).toBeGreaterThan(0);
-    expect(log.decidedWhilePaused.every(Boolean)).toBe(true);
+    expect(log.decidedWhilePaused.some(Boolean)).toBe(false);
+    expect(log.modes).toEqual(["realtime"]);
   });
 
   it("ends as a timeout when the game-time cap passes", async () => {
@@ -169,21 +171,14 @@ describe("SessionRunner", () => {
     }
   });
 
-  it("refuses paused mode on an engine that cannot pause", async () => {
-    const engine = new FakeEngine(Infinity, false);
-    const { api, log } = fakeApi(engine);
-    await expect(new SessionRunner(engine, api, cfg()).run(canvas)).rejects.toThrow(/cannot pause/);
-    expect(log.created).toBe(0);
-  });
-
-  it("keeps playing in realtime mode without pausing", async () => {
+  it("keeps playing while a decision is pending", async () => {
     const engine = new FakeEngine(60);
     const { api, log } = fakeApi(engine);
-    await new SessionRunner(engine, api, cfg({ mode: "realtime" })).run(canvas);
+    await new SessionRunner(engine, api, cfg()).run(canvas);
     expect(log.decidedWhilePaused.some(Boolean)).toBe(false);
   });
 
-  it("stops a walking player while a slow decision is pending in realtime mode", async () => {
+  it("stops a walking player while a slow decision is pending ", async () => {
     const presses: boolean[] = [];
     const engine = new FakeEngine(3000);
     engine.setKey = (k, d) => {
@@ -195,7 +190,7 @@ describe("SessionRunner", () => {
     await new SessionRunner(
       engine,
       api,
-      cfg({ mode: "realtime", stopAfterMs: 10 }),
+      cfg({ stopAfterMs: 10 }),
     ).run(canvas);
     // Without the stop the same intent is held and forward is pressed once. With it, each slow
     // decision lets go of the key and the answer presses it again.
