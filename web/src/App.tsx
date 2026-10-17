@@ -12,7 +12,6 @@ import {
   type EngineKind,
   type GameState,
   type Intent,
-  type Mode,
   type PlayerAvailability,
   type PlayerType,
   type Route,
@@ -76,7 +75,6 @@ export default function App() {
 
   const [players, setPlayers] = useState<PlayerAvailability[]>([]);
   const [playerType, setPlayerType] = useState<PlayerType>("rule_bot");
-  const [mode, setMode] = useState<Mode>("paused");
   const [engineKind, setEngineKind] = useState<EngineKind>(
     import.meta.env.VITE_DEFAULT_ENGINE === "wasm" ? "wasm" : "mock",
   );
@@ -147,7 +145,6 @@ export default function App() {
       api,
       {
         playerType: pt,
-        mode,
         engine: engineKind,
         level: lvl,
         seed: sd,
@@ -504,17 +501,6 @@ export default function App() {
           <details className="advanced">
             <summary>Advanced</summary>
             <div className="controls inner">
-              <label>
-                Mode
-                <select
-                  value={mode}
-                  disabled={running}
-                  onChange={(e) => setMode(e.target.value as Mode)}
-                >
-                  <option value="paused">paused</option>
-                  <option value="realtime">realtime</option>
-                </select>
-              </label>
               <label>
                 Seed
                 <input
