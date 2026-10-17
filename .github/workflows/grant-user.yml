@@ -40,8 +40,10 @@ jobs:
           set +e
           case "$USER_NAME" in *[!A-Za-z0-9._@+-]*) echo "::error::odd user name"; exit 1;; esac
           fails=0
-          note() { echo "::notice title=$1::$(printf '%s' "$2" | tr '\n' '|' | cut -c1-600)"; }
-          bad() { echo "::warning title=FAILED $1::$(printf '%s' "$2" | tr '\n' '|' | cut -c1-600)"; fails=$((fails+1)); }
+          # GitHub shows ten annotations per step, so results are collected and printed once.
+          : > "$RUNNER_TEMP/results"
+          note() { echo "ok     $1: $(printf '%s' "$2" | tr '\n' ' ' | cut -c1-300)" >> "$RUNNER_TEMP/results"; }
+          bad() { echo "FAILED $1: $(printf '%s' "$2" | tr '\n' ' ' | cut -c1-500)" >> "$RUNNER_TEMP/results"; fails=$((fails+1)); }
           acl() { jq -nc --arg u "$USER_NAME" --arg l "$1" '{access_control_list:[{user_name:$u, permission_level:$l}]}'; }
 
           # 1. The app
@@ -95,5 +97,5 @@ jobs:
           out=$(databricks api patch "/api/2.0/permissions/database-projects/pdoom" --json "$(acl CAN_MANAGE)" 2>&1) \
             && note lakebase-project "CAN_MANAGE on project pdoom" || bad lakebase-project "$out"
 
-          echo "::notice title=summary::$fails step(s) failed"
+          echo "::notice title=grant results, $fails failed::$(tr '\n' '¶' < "$RUNNER_TEMP/results" | cut -c1-3800)"
           [ "$fails" = 0 ]
