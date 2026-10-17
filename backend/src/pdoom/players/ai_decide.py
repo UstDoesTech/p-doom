@@ -7,8 +7,9 @@ The SQL function's questions argument must be a constant, so the JSON is embedde
 statement text and the state goes in as a parameter. to_json() turns the returned VARIANT into
 text the warehouse API hands back reliably.
 
-The model picks one intent a second. Left alone, a held turn swings about 90 degrees and a held
-walk carries on past the point it was for, so the player cannot follow a route. After the model
+The model is asked for one intent every half second or so. Left alone, a held turn swings about
+90 degrees and a held walk carries on past the point it was for, so the player cannot follow a
+route. After the model
 answers, `shape()` says how many tics to hold the key for, from the route (or the nearest enemy),
 and, when no enemy is in sight and the model turned the wrong way round the route bearing, turns
 it the right way. The model still chooses what to do; the assist only sizes and aims the step.
@@ -25,6 +26,13 @@ a row asked to move and the player did not, and no enemy is in sight, it overrid
 a short slide to one side, then the other, then a step back and a turn, until it is moving again.
 raw_output records it under "assist" as "unstick".
 
+Each call also carries a `context` built from what the player has seen and done so far in the
+session (ai_context.py): where it is, where it has been, what it just tried and whether that
+worked, and what is happening around it. The model gets it beside the state, and raw_output keeps
+it under "context" so a session can be replayed with the same view. The browser sends several
+calls at once, so answers arrive late and out of order; ai_context files each action at the tic
+it probably took effect.
+
 Each decision's raw_output carries "transport": "rest" or "sql", and "rest_error" when the backup
 was used, so a run shows which path answered.
 """
@@ -36,12 +44,13 @@ import logging
 import math
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from importlib import resources
 from typing import Any
 
 from ..databricks_sql import SqlRunner
 from ..models import Decision, GameState, Intent, PlayerType
+from .ai_context import STUCK_MIN_EFFORT, STUCK_UNITS_PER_TIC, Memory
 from .rule_bot import ENGAGE_RANGE, FIRE_CONE_DEG, turn_hold, walk_hold
 
 EXCLUDE_FROM_STATE = {"tic": True, "seed": True}
@@ -97,6 +106,14 @@ def parse_decision(raw_json: str) -> Decision:
     )
 
 
+def state_payload(state: GameState) -> dict[str, Any]:
+    """The state as ai_decide sees it: the frame, plus the player's own context when it has one."""
+    out = state.model_dump(mode="json", exclude=EXCLUDE_FROM_STATE)
+    if state.context:
+        out["context"] = state.context
+    return out
+
+
 class AiDecideApi:
     """The REST transport. Raises on HTTP or network errors; returns the response dict."""
 
@@ -121,28 +138,33 @@ class AiDecideApi:
 
     def run(self, state: GameState) -> dict[str, Any]:
         body = {
-            "state": state.model_dump(mode="json", exclude=EXCLUDE_FROM_STATE),
+            "state": state_payload(state),
             "questions": self.questions,
             "options": {"version": "1.0"},
         }
         return self.client.api_client.do("POST", API_PATH, body=body)
 
 
-MOVING = (Intent.advance, Intent.retreat, Intent.strafe_left, Intent.strafe_right)
-STUCK_UNITS_PER_TIC = 2.0  # asked to walk, it should cover at least this per tic held
 UNSTICK_AFTER = 2  # decisions in a row without moving before the model is overridden
 UNSTICK_HOLD = 14
 JAM_TICS = 140  # about four seconds of game time
 JAM_UNITS = 40.0  # less net movement than this over JAM_TICS, whatever the feet were doing
+RESET_TICS = 70  # a state this far behind the last one is a new run, not a late arrival
+# How long to hold an intent the model gave no length for. The browser sends several calls at
+# once now, so a key left down until "the next answer" would be left down for the wrong reasons.
+DEFAULT_HOLD = {
+    Intent.advance: 12,
+    Intent.retreat: 10,
+    Intent.strafe_left: 10,
+    Intent.strafe_right: 10,
+    Intent.fire: 12,
+    Intent.use: 4,
+}
 
 
 @dataclass
 class _Track:
-    tic: int = -1
-    x: float = 0.0
-    y: float = 0.0
-    last: Intent | None = None
-    hold: int | None = None
+    mem: Memory = field(default_factory=Memory)
     stuck: int = 0
     anchor_x: float = 0.0
     anchor_y: float = 0.0
@@ -176,37 +198,58 @@ class AiDecidePlayer:
             f"'{sql_literal(questions_json)}', map('version', '1.0'))) AS decision"
         )
 
-    def decide(self, state: GameState, screenshot_b64: str | None = None) -> Decision:
-        decision = self._decide(state)
-        if not self.assist:
-            return decision
-        decision = shape(state, decision)
-        with self._lock:
-            return self._unstick(state, decision)
+    tracks_sessions = True  # main.py passes session_id to decide() for players that say so
 
-    def _unstick(self, state: GameState, decision: Decision) -> Decision:
-        key = (state.level, state.seed)
+    def decide(
+        self, state: GameState, screenshot_b64: str | None = None, session_id: str | None = None
+    ) -> Decision:
+        started = self._clock()
+        with self._lock:
+            track = self._track(session_id or (state.level, state.seed), state)
+            self._observe(track, state)
+            context = track.mem.context(state, track.stuck, track.jam)
+        decision = self._decide(state.model_copy(update={"context": context}))
+        if self.assist:
+            decision = shape(state, decision)
+        decision = _note(decision, "context", context)
+        with self._lock:
+            overridden = False
+            if self.assist:
+                decision, overridden = self._override(track, state, decision)
+                decision = _bounded(decision)
+            if decision.intent is not None:
+                track.mem.record(
+                    state, decision.intent, decision.hold_tics, self._clock() - started, overridden
+                )
+        return decision
+
+    def _track(self, key: Any, state: GameState) -> _Track:
         track = self._tracks.get(key)
-        if track is None or state.tic < track.tic:
+        if track is None or state.tic < track.mem.last_tic - RESET_TICS:
             track = self._tracks[key] = _Track()
             if len(self._tracks) > 256:
                 self._tracks.pop(next(iter(self._tracks)))
-        p = state.player
-        if track.tic >= 0 and track.last in MOVING:
-            elapsed = state.tic - track.tic
-            if track.hold is not None:
-                elapsed = min(elapsed, track.hold)
-            expected = max(2.0, STUCK_UNITS_PER_TIC * elapsed) if elapsed > 0 else 6.0
-            if math.hypot(p.x - track.x, p.y - track.y) < expected:
-                track.stuck += 1
-            else:
-                track.stuck = 0
-        elif track.stuck and track.last not in MOVING:
-            pass  # a turn or a shot while stuck neither proves nor clears it
-        else:
-            track.stuck = 0
+        return track
 
-        fighting = any(e.line_of_sight and e.distance <= ENGAGE_RANGE for e in state.enemies)
+    def _observe(self, track: _Track, state: GameState) -> None:
+        """File the state and update whether the player is stuck. Called under the lock."""
+        mem, p = track.mem, state.player
+        fresh = mem.observe(state)
+        if fresh is None:
+            return  # a late arrival: it adds nothing to the history
+        base = mem.baseline()
+        if base is not None:
+            # Walking intents in force since then. A turn or a shot while stuck neither proves
+            # nor clears it.
+            effort = mem.moving_tics(base.tic, state.tic)
+            if effort >= STUCK_MIN_EFFORT:
+                expected = max(2.0, STUCK_UNITS_PER_TIC * effort)
+                if math.hypot(p.x - base.x, p.y - base.y) < expected:
+                    track.stuck += 1
+                else:
+                    track.stuck = 0
+
+        fighting = _fighting(state)
         # Net movement over a window catches what the per-step check cannot: sliding a few units
         # along a barrel each step looks like progress while the player goes nowhere.
         if track.anchor_tic < 0:
@@ -221,40 +264,41 @@ class AiDecidePlayer:
                 track.anchor_x, track.anchor_y, track.anchor_tic = p.x, p.y, state.tic
         if fighting:
             track.jam = False
-        if (track.stuck >= UNSTICK_AFTER or track.jam) and not fighting:
-            step = track.overrides % 5
-            track.overrides += 1
-            bearing = state.route.bearing if state.route else None
-            left_first = bearing is not None and bearing < 0
-            first = Intent.strafe_left if left_first else Intent.strafe_right
-            other = Intent.strafe_right if first == Intent.strafe_left else Intent.strafe_left
-            intent, hold = [
-                (first, UNSTICK_HOLD),
-                (Intent.advance, UNSTICK_HOLD),
-                (other, UNSTICK_HOLD * 2),
-                (Intent.advance, UNSTICK_HOLD),
-                (Intent.retreat, 8),
-            ][step]
-            raw = decision.raw_output
-            out = dict(raw) if isinstance(raw, dict) else {"output": raw}
-            out["assist"] = {
-                **(out.get("assist") or {}),
-                "unstick": {
-                    "stuck": track.stuck,
-                    "jam": track.jam,
-                    "model_intent": str(decision.intent),
-                    "step": step,
-                },
-            }
-            decision = decision.model_copy(
-                update={"intent": intent, "hold_tics": hold, "raw_output": out}
-            )
 
-        else:
+    def _override(
+        self, track: _Track, state: GameState, decision: Decision
+    ) -> tuple[Decision, bool]:
+        """Take the step from the model when the player is stuck and nothing is shooting at it."""
+        if not (track.stuck >= UNSTICK_AFTER or track.jam) or _fighting(state):
             track.overrides = 0
-        track.tic, track.x, track.y = state.tic, p.x, p.y
-        track.last, track.hold = decision.intent, decision.hold_tics
-        return decision
+            return decision, False
+        step = track.overrides % 5
+        track.overrides += 1
+        bearing = state.route.bearing if state.route else None
+        left_first = bearing is not None and bearing < 0
+        first = Intent.strafe_left if left_first else Intent.strafe_right
+        other = Intent.strafe_right if first == Intent.strafe_left else Intent.strafe_left
+        intent, hold = [
+            (first, UNSTICK_HOLD),
+            (Intent.advance, UNSTICK_HOLD),
+            (other, UNSTICK_HOLD * 2),
+            (Intent.advance, UNSTICK_HOLD),
+            (Intent.retreat, 8),
+        ][step]
+        raw = decision.raw_output
+        out = dict(raw) if isinstance(raw, dict) else {"output": raw}
+        out["assist"] = {
+            **(out.get("assist") or {}),
+            "unstick": {
+                "stuck": track.stuck,
+                "jam": track.jam,
+                "model_intent": str(decision.intent),
+                "step": step,
+            },
+        }
+        return decision.model_copy(
+            update={"intent": intent, "hold_tics": hold, "raw_output": out}
+        ), True
 
     def _decide(self, state: GameState) -> Decision:
         rest_error: str | None = None
@@ -294,11 +338,30 @@ class AiDecidePlayer:
         return None, decision.error or "REST gave no usable answer"
 
     def _decide_sql(self, state: GameState) -> Decision:
-        payload = state.model_dump_json(exclude=EXCLUDE_FROM_STATE)
+        payload = json.dumps(state_payload(state), separators=(",", ":"))
         rows = self.sql.run(self.statement, {"state": payload}, max_wait_s=SQL_TIMEOUT_S)
         if not rows or not rows[0] or rows[0][0] is None:
             return Decision(error="ai_decide returned no rows")
         return parse_decision(rows[0][0])
+
+
+def _fighting(state: GameState) -> bool:
+    return any(e.line_of_sight and e.distance <= ENGAGE_RANGE for e in state.enemies)
+
+
+def _note(decision: Decision, key: str, value: Any) -> Decision:
+    raw = decision.raw_output
+    out = dict(raw) if isinstance(raw, dict) else {"output": raw}
+    out[key] = value
+    return decision.model_copy(update={"raw_output": out})
+
+
+def _bounded(decision: Decision) -> Decision:
+    """Give every intent a length, so no key stays down because an answer was late."""
+    if decision.intent is None or decision.hold_tics is not None:
+        return decision
+    hold = DEFAULT_HOLD.get(decision.intent)
+    return decision if hold is None else decision.model_copy(update={"hold_tics": hold})
 
 
 KEEP_IN_A_FIGHT = (Intent.retreat, Intent.strafe_left, Intent.strafe_right, Intent.use)

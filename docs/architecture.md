@@ -3,7 +3,7 @@
 ```
 Browser (React)
   engine (mock or Doom WASM) + reflex layer (holds an intent as key presses every tic)
-  runner: asks the backend for a new intent every decision gap, batches telemetry
+  runner: asks the backend for a new intent every decision gap (ai_decide: two calls in flight, spread evenly), batches telemetry
       |  HTTPS /api
 Azure Container App (one container, one replica)
   FastAPI: players, sessions, telemetry sink

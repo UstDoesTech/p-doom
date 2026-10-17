@@ -143,6 +143,10 @@ class GameState(BaseModel):
     interactables: list[Interactable] = Field(default_factory=list, max_length=8)
     use_target: UseTarget | None = None
     route: Route | None = None
+    # What the player remembers of this session (ai_context.py). Not sent by the browser: the
+    # server builds it for ai_decide and puts it in that request itself, so it is kept out of
+    # every other dump of the state.
+    context: dict[str, Any] | None = Field(default=None, exclude=True)
 
 
 class Decision(BaseModel):

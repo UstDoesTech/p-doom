@@ -197,6 +197,104 @@ describe("SessionRunner", () => {
     expect(presses.filter(Boolean).length).toBeGreaterThanOrEqual(2);
   });
 
+  describe("overlapping decision calls", () => {
+    const overlapped = (over: Partial<RunnerConfig> = {}) =>
+      cfg({ maxInFlight: 3, decisionIntervalMs: 5, maxStaleTics: 100000, ...over });
+
+    it("asks again before the last answer is back, but never exceeds the limit", async () => {
+      const engine = new FakeEngine(1500);
+      const { api } = fakeApi(engine);
+      let now = 0;
+      let peak = 0;
+      const inner = api.decide.bind(api);
+      api.decide = async (...a) => {
+        now += 1;
+        peak = Math.max(peak, now);
+        await new Promise((r) => setTimeout(r, 40));
+        try {
+          return await inner(...a);
+        } finally {
+          now -= 1;
+        }
+      };
+      await new SessionRunner(engine, api, overlapped()).run(canvas);
+      expect(peak).toBe(3);
+    });
+
+    it("keeps one call at a time by default", async () => {
+      const engine = new FakeEngine(800);
+      const { api } = fakeApi(engine);
+      let now = 0;
+      let peak = 0;
+      const inner = api.decide.bind(api);
+      api.decide = async (...a) => {
+        now += 1;
+        peak = Math.max(peak, now);
+        await new Promise((r) => setTimeout(r, 20));
+        try {
+          return await inner(...a);
+        } finally {
+          now -= 1;
+        }
+      };
+      await new SessionRunner(engine, api, cfg()).run(canvas);
+      expect(peak).toBe(1);
+    });
+
+    it("drops an answer that lands after a newer one", async () => {
+      const pressed: string[] = [];
+      const engine = new FakeEngine(2500);
+      engine.setKey = (k, d) => {
+        if (d) pressed.push(k);
+      };
+      const { api } = fakeApi(engine);
+      let n = 0;
+      api.decide = async () => {
+        n += 1;
+        const first = n === 1;
+        await new Promise((r) => setTimeout(r, first ? 120 : 5));
+        return {
+          intent: first ? "turn_left" : "advance",
+          confidence: null,
+          threat_prob: null,
+          danger_score: null,
+          latency_ms: 1,
+          error: null,
+        } as Decision;
+      };
+      await new SessionRunner(engine, api, overlapped()).run(canvas);
+      expect(pressed).toContain("forward");
+      expect(pressed).not.toContain("left"); // the late turn was not acted on
+    });
+
+    it("drops an answer to a state that is too old by the time it lands", async () => {
+      const pressed: string[] = [];
+      const engine = new FakeEngine(2500);
+      engine.setKey = (k, d) => {
+        if (d) pressed.push(k);
+      };
+      const { api } = fakeApi(engine, false, false, 60);
+      const inner = api.decide.bind(api);
+      api.decide = async (...a) => ({ ...(await inner(...a)), intent: "advance" });
+      // The mock moves the game on 5 tics every look, so 60 ms is far more than 10 tics.
+      await new SessionRunner(engine, api, overlapped({ maxStaleTics: 10 })).run(canvas);
+      expect(pressed).not.toContain("forward");
+    });
+
+    it("does not stop the walk on a slow answer, since the next one is already on its way", async () => {
+      const presses: boolean[] = [];
+      const engine = new FakeEngine(3000);
+      engine.setKey = (k, d) => {
+        if (k === "forward") presses.push(d);
+      };
+      const { api } = fakeApi(engine, false, false, 80);
+      const inner = api.decide.bind(api);
+      api.decide = async (...a) => ({ ...(await inner(...a)), intent: "advance" });
+      await new SessionRunner(engine, api, overlapped({ stopAfterMs: 10 })).run(canvas);
+      expect(presses.filter(Boolean).length).toBe(1);
+    });
+  });
+
   it("counts decision timeouts on the session and keeps the game moving", async () => {
     const engine = new FakeEngine(100);
     const { api, log } = fakeApi(engine, true);
