@@ -21,7 +21,7 @@ import {
 const LOCAL_PLAYERS: PlayerType[] = ["rule_bot"];
 /** Players that answer in about a second and are asked again before the last answer is back:
  * decision calls allowed at once. Everyone else is asked one call at a time. */
-const OVERLAPPED: Partial<Record<PlayerType, number>> = { ai_decide: 3 };
+const OVERLAPPED: Partial<Record<PlayerType, number>> = { ai_decide: 2 };
 
 interface Hud {
   health: number;
@@ -127,7 +127,7 @@ export default function App() {
   }, [wasmAvailable, engineKind]);
 
   const gapFor = (pt: PlayerType) =>
-    gapOverride ?? (LOCAL_PLAYERS.includes(pt) ? 250 : OVERLAPPED[pt] ? 350 : 1000);
+    gapOverride ?? (LOCAL_PLAYERS.includes(pt) ? 250 : OVERLAPPED[pt] ? 200 : 1000);
   const callsFor = (pt: PlayerType) => Math.max(1, callsOverride ?? OVERLAPPED[pt] ?? 1);
 
   const availability = (pt: PlayerType) => players.find((p) => p.player_type === pt);

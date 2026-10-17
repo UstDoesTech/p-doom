@@ -23,7 +23,8 @@ export interface RunnerConfig {
   level: string;
   seed: number;
   /** Gap between the end of one decision and the start of the next. With maxInFlight above 1 it
-   * is the gap between the starts of two calls instead, since they overlap. */
+   * is the least gap between the starts of two calls instead, since they overlap; calls are
+   * spread across the time one takes if that is longer. */
   decisionIntervalMs: number;
   /** Decision calls allowed at once. A player that takes a second to answer can be asked every
    * few hundred milliseconds; each answer is acted on as it lands, and one that lands after a
@@ -122,6 +123,7 @@ export class SessionRunner {
     let lastDecisionAt = -Infinity;
     let inFlight = 0;
     let lastStartAt = -Infinity;
+    let avgCallMs = 0; // how long a call has been taking, to space overlapping calls evenly
     let seq = 0;
     let appliedSeq = 0;
     const maxInFlight = Math.max(1, cfg.maxInFlight ?? 1);
@@ -131,6 +133,7 @@ export class SessionRunner {
     let decisionTimeouts = 0;
 
     const decide = async (state: GameState, mine: number) => {
+      const began = performance.now();
       const shot = cfg.playerType === "vision_llm" ? engine.screenshot() : null;
       // The game keeps running while the player thinks. With one call at a time, a slow answer
       // stops the walk meanwhile, so the held key does not carry on past where the state was
@@ -157,6 +160,8 @@ export class SessionRunner {
       } finally {
         if (stopTimer) clearTimeout(stopTimer);
         lastDecisionAt = performance.now();
+        const took = lastDecisionAt - began;
+        avgCallMs = avgCallMs ? 0.7 * avgCallMs + 0.3 * took : took;
         inFlight -= 1;
       }
     };
@@ -201,8 +206,12 @@ export class SessionRunner {
           if (!isHuman) {
             reflex.apply(state.tic);
             const at = performance.now();
+            // Overlapping calls start evenly spread across the time one takes, not in clumps as
+            // each slot frees up.
+            const gap =
+              maxInFlight > 1 ? Math.max(cfg.decisionIntervalMs, avgCallMs / maxInFlight) : cfg.decisionIntervalMs;
             const since = at - (maxInFlight > 1 ? lastStartAt : lastDecisionAt);
-            if (inFlight < maxInFlight && since >= cfg.decisionIntervalMs) {
+            if (inFlight < maxInFlight && since >= gap) {
               inFlight += 1;
               lastStartAt = at;
               seq += 1;

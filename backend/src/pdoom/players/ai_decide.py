@@ -7,8 +7,9 @@ The SQL function's questions argument must be a constant, so the JSON is embedde
 statement text and the state goes in as a parameter. to_json() turns the returned VARIANT into
 text the warehouse API hands back reliably.
 
-The model picks one intent a second. Left alone, a held turn swings about 90 degrees and a held
-walk carries on past the point it was for, so the player cannot follow a route. After the model
+The model is asked for one intent every half second or so. Left alone, a held turn swings about
+90 degrees and a held walk carries on past the point it was for, so the player cannot follow a
+route. After the model
 answers, `shape()` says how many tics to hold the key for, from the route (or the nearest enemy),
 and, when no enemy is in sight and the model turned the wrong way round the route bearing, turns
 it the right way. The model still chooses what to do; the assist only sizes and aims the step.
