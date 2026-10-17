@@ -19,6 +19,9 @@ import {
 
 /** Players that answer in milliseconds, so they can decide several times a second and steer. */
 const LOCAL_PLAYERS: PlayerType[] = ["rule_bot"];
+/** Players that answer in about a second and are asked again before the last answer is back:
+ * decision calls allowed at once. Everyone else is asked one call at a time. */
+const OVERLAPPED: Partial<Record<PlayerType, number>> = { ai_decide: 3 };
 
 interface Hud {
   health: number;
@@ -88,6 +91,7 @@ export default function App() {
   const stopSet = useRef(false);
   // null until the user types one: a local player is cheap to ask, so it decides more often.
   const [gapOverride, setGapOverride] = useState<number | null>(null);
+  const [callsOverride, setCallsOverride] = useState<number | null>(null);
   const [timeoutS, setTimeoutS] = useState(0);
 
   const [running, setRunning] = useState(false);
@@ -122,7 +126,9 @@ export default function App() {
     if (wasmAvailable === false && engineKind === "wasm") setEngineKind("mock");
   }, [wasmAvailable, engineKind]);
 
-  const gapFor = (pt: PlayerType) => gapOverride ?? (LOCAL_PLAYERS.includes(pt) ? 250 : 1000);
+  const gapFor = (pt: PlayerType) =>
+    gapOverride ?? (LOCAL_PLAYERS.includes(pt) ? 250 : OVERLAPPED[pt] ? 350 : 1000);
+  const callsFor = (pt: PlayerType) => Math.max(1, callsOverride ?? OVERLAPPED[pt] ?? 1);
 
   const availability = (pt: PlayerType) => players.find((p) => p.player_type === pt);
 
@@ -149,6 +155,7 @@ export default function App() {
         level: lvl,
         seed: sd,
         decisionIntervalMs: gapFor(pt),
+        maxInFlight: callsFor(pt),
         eventEveryTics: 5,
         timeoutS,
       },
@@ -517,6 +524,16 @@ export default function App() {
                   value={gapOverride ?? gapFor(playerType)}
                   disabled={running}
                   onChange={(e) => setGapOverride(Number(e.target.value))}
+                />
+              </label>
+              <label>
+                Calls at once
+                <input
+                  type="number"
+                  min={1}
+                  value={callsOverride ?? callsFor(playerType)}
+                  disabled={running}
+                  onChange={(e) => setCallsOverride(Number(e.target.value))}
                 />
               </label>
               <label>

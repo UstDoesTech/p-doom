@@ -3,8 +3,12 @@ name: ai-decide
 on:
   workflow_dispatch:
   push:
-    branches: [feat/ai-decide-rest]
-    paths: [.github/workflows/ai-decide.yml, backend/src/pdoom/players/ai_decide.py]
+    branches: [feat/ai-decide-rest, feat/ai-decide-context]
+    paths:
+      - .github/workflows/ai-decide.yml
+      - backend/src/pdoom/players/ai_decide.py
+      - backend/src/pdoom/players/ai_context.py
+      - backend/src/pdoom/players/ai_decide_questions.json
 permissions:
   contents: read
 env:
@@ -60,4 +64,93 @@ jobs:
                    "transport": (d.raw_output or {}).get("transport") if isinstance(d.raw_output, dict) else None,
                    "rest_error": (d.raw_output or {}).get("rest_error") if isinstance(d.raw_output, dict) else None,
                    "seconds": secs})
+          PY
+      - name: Probe the context and three calls at once
+        working-directory: backend
+        run: |
+          python - <<'PY'
+          import json, statistics, time
+          from concurrent.futures import ThreadPoolExecutor
+          from pdoom.models import GameState
+          from pdoom.players.ai_decide import AiDecideApi, load_questions, parse_decision, state_payload
+
+          def base(**over):
+              s = {
+                  "tic": 900, "level": "E1M1", "seed": 1,
+                  "player": {"health": 100, "armor": 0, "weapon": "pistol",
+                             "ammo": {"bullets": 40}, "x": 1327, "y": -3290, "angle": 90},
+                  "enemies": [], "pickups": [], "exit_bearing": 0,
+                  "walls": {"ahead": 20, "ahead_right": 60, "right": 70, "behind_right": 300,
+                            "behind": 400, "behind_left": 300, "left": 320, "ahead_left": 300},
+                  "route": {"bearing": 0, "distance": 220, "via": "portal", "remaining": 900},
+              }
+              s.update(over)
+              return GameState.model_validate(s)
+
+          blocked_ctx = {
+              "seconds_played": 26, "explored_areas": 3, "area_visits": 1, "seconds_here": 18,
+              "moved_5s": 4, "moved_15s": 9, "progress_5s": 0, "progress_15s": 3,
+              "stuck": 3, "jammed": False,
+              "recent": [
+                  {"seconds_ago": 2.0, "intent": "advance", "moved": 2, "blocked": True},
+                  {"seconds_ago": 1.4, "intent": "advance", "moved": 1, "blocked": True},
+                  {"seconds_ago": 0.7, "intent": "advance", "moved": 1, "blocked": True},
+              ],
+              "enemies_in_sight": 0, "damage_3s": 0, "damage_10s": 0, "ammo_spent_5s": 0,
+              "summary": "Your last moves did not get you anywhere: you are blocked. No progress toward the exit in 15 s.",
+          }
+          circles_ctx = {
+              "seconds_played": 95, "explored_areas": 6, "area_visits": 4, "seconds_here": 3,
+              "trail": [{"seconds_ago": 5, "distance": 310, "bearing": 20},
+                        {"seconds_ago": 20, "distance": 40, "bearing": -150}],
+              "moved_5s": 310, "moved_15s": 120, "progress_5s": -90, "progress_15s": -140,
+              "stuck": 0, "jammed": False, "enemies_in_sight": 0, "damage_3s": 0,
+              "summary": "You have been in this area 4 times already. No progress toward the exit in 15 s.",
+          }
+          fight_ctx = {
+              "seconds_played": 40, "explored_areas": 5, "area_visits": 1, "seconds_here": 4,
+              "stuck": 0, "jammed": False, "enemies_in_sight": 2,
+              "threat": {"type": "imp", "distance": 260, "bearing": 10, "closing_per_s": 140},
+              "damage_3s": 18, "damage_10s": 18, "last_hit_s": 1, "ammo_spent_5s": 3,
+              "summary": "imp in sight 260 away, closing at 140 a second. Lost 18 health in the last 3 s.",
+          }
+          cases = {
+              "blocked": base(context=blocked_ctx),
+              "circles": base(context=circles_ctx, walls={"ahead": 400, "ahead_right": 300,
+                  "right": 200, "behind_right": 300, "behind": 100, "behind_left": 300,
+                  "left": 200, "ahead_left": 300}, route={"bearing": 100, "distance": 500,
+                  "via": "portal", "remaining": 1400}),
+              "fight": base(context=fight_ctx, walls=None, route=None, player={"health": 82,
+                  "armor": 0, "weapon": "pistol", "ammo": {"bullets": 37}, "x": 10, "y": 10,
+                  "angle": 0}, enemies=[
+                  {"type": "imp", "distance": 260, "bearing": 10, "line_of_sight": True},
+                  {"type": "zombieman", "distance": 480, "bearing": -30, "line_of_sight": True}]),
+          }
+          api = AiDecideApi(load_questions())
+          for name, state in cases.items():
+              with_ctx, without = [], []
+              for _ in range(4):
+                  with_ctx.append(parse_decision(json.dumps(api.run(state))).intent)
+                  bare = state.model_copy(update={"context": None})
+                  without.append(parse_decision(json.dumps(api.run(bare))).intent)
+              as_text = lambda xs: ",".join(str(x.value if x else None) for x in xs)
+              print(f"::notice title=context {name}::with={as_text(with_ctx)} | without={as_text(without)}")
+
+          # three at once, the way the browser will send them
+          lat, errors = [], []
+          def one(_):
+              t0 = time.perf_counter()
+              try:
+                  api.run(cases["blocked"])
+                  lat.append(time.perf_counter() - t0)
+              except Exception as exc:  # noqa: BLE001
+                  errors.append(f"{type(exc).__name__}: {str(exc)[:160]}")
+          t0 = time.perf_counter()
+          with ThreadPoolExecutor(3) as pool:
+              list(pool.map(one, range(18)))
+          wall = time.perf_counter() - t0
+          q = statistics.quantiles(lat, n=10) if len(lat) >= 5 else lat
+          print(f"::notice title=three at once::{len(lat)} ok, {len(errors)} failed in {wall:.1f}s = "
+                f"{len(lat) / wall:.2f}/s; median {statistics.median(lat):.2f}s, p90 {q[-1]:.2f}s; "
+                f"errors {errors[:3]}")
           PY

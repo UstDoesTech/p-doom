@@ -189,7 +189,10 @@ def create_app(
 
         started = time.perf_counter()
         try:
-            decision = player.decide(body.state, body.screenshot)
+            if getattr(player, "tracks_sessions", False):
+                decision = player.decide(body.state, body.screenshot, session_id=session.id)
+            else:
+                decision = player.decide(body.state, body.screenshot)
         except Exception as exc:  # a failed decision is data, not a crashed game
             log.exception("Player %s failed", session.player_type)
             decision = Decision(error=f"{type(exc).__name__}: {exc}"[:500])

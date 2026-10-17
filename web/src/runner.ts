@@ -22,8 +22,15 @@ export interface RunnerConfig {
   engine: EngineKind;
   level: string;
   seed: number;
-  /** Gap between the end of one decision and the start of the next. */
+  /** Gap between the end of one decision and the start of the next. With maxInFlight above 1 it
+   * is the gap between the starts of two calls instead, since they overlap. */
   decisionIntervalMs: number;
+  /** Decision calls allowed at once. A player that takes a second to answer can be asked every
+   * few hundred milliseconds; each answer is acted on as it lands, and one that lands after a
+   * newer one, or too late to be about the game any more, is dropped. Default 1. */
+  maxInFlight?: number;
+  /** With overlapping calls, an answer to a state older than this many tics is dropped. */
+  maxStaleTics?: number;
   /** Sample one telemetry event every this many tics. */
   eventEveryTics: number;
   /** Game-time cap in seconds. The session ends as a timeout. 0 means no cap: play until the
@@ -113,22 +120,33 @@ export class SessionRunner {
     const startTic = engine.getState().tic;
     let lastSampled = -Infinity;
     let lastDecisionAt = -Infinity;
-    let inFlight = false;
+    let inFlight = 0;
+    let lastStartAt = -Infinity;
+    let seq = 0;
+    let appliedSeq = 0;
+    const maxInFlight = Math.max(1, cfg.maxInFlight ?? 1);
+    const maxStale = cfg.maxStaleTics ?? 105;
     let done = false;
     let lastState = engine.getState();
     let decisionTimeouts = 0;
 
-    const decide = async (state: GameState) => {
+    const decide = async (state: GameState, mine: number) => {
       const shot = cfg.playerType === "vision_llm" ? engine.screenshot() : null;
-      // The game keeps running while the player thinks. A slow answer stops the walk meanwhile,
-      // so the held key does not carry on past where the state was read.
-      const stopTimer = setTimeout(() => reflex.stopMoving(), cfg.stopAfterMs ?? 300);
+      // The game keeps running while the player thinks. With one call at a time, a slow answer
+      // stops the walk meanwhile, so the held key does not carry on past where the state was
+      // read. With overlapping calls the keys are not held on an old answer: every intent the
+      // server returns has a length, and a newer answer is never far behind.
+      const stopTimer =
+        maxInFlight === 1 ? setTimeout(() => reflex.stopMoving(), cfg.stopAfterMs ?? 300) : null;
       try {
         const decision = await api.decide(session.session_id, state, shot);
         if (done) return;
-        if (decision.intent) {
+        const now = engine.getState().tic;
+        const stale = maxInFlight > 1 && (mine < appliedSeq || now - state.tic > maxStale);
+        if (decision.intent && !stale) {
+          appliedSeq = Math.max(appliedSeq, mine);
           const hold = decision.hold_tics;
-          reflex.setIntent(decision.intent, hold ? engine.getState().tic + hold : null);
+          reflex.setIntent(decision.intent, hold ? now + hold : null);
         }
         hooks.onDecision?.(decision, state);
       } catch (e) {
@@ -137,9 +155,9 @@ export class SessionRunner {
         if (e instanceof ApiTimeout) decisionTimeouts += 1;
         hooks.onError?.(e instanceof Error ? e.message : String(e));
       } finally {
-        clearTimeout(stopTimer);
+        if (stopTimer) clearTimeout(stopTimer);
         lastDecisionAt = performance.now();
-        inFlight = false;
+        inFlight -= 1;
       }
     };
 
@@ -182,9 +200,13 @@ export class SessionRunner {
 
           if (!isHuman) {
             reflex.apply(state.tic);
-            if (!inFlight && performance.now() - lastDecisionAt >= cfg.decisionIntervalMs) {
-              inFlight = true;
-              void decide(state);
+            const at = performance.now();
+            const since = at - (maxInFlight > 1 ? lastStartAt : lastDecisionAt);
+            if (inFlight < maxInFlight && since >= cfg.decisionIntervalMs) {
+              inFlight += 1;
+              lastStartAt = at;
+              seq += 1;
+              void decide(state, seq);
             }
           }
         } catch (e) {
