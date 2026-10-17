@@ -1,0 +1,99 @@
+# Gives one Databricks user full control of everything the p(doom) deploy creates: the app,
+# the Unity Catalog schema and its views, the Lakebase catalog and database, the Genie space and
+# the bundle's workspace folders. Each step reports on its own and the job fails at the end if any
+# did. Results are annotations. Needs the DATABRICKS_* secrets.
+name: grant-user
+on:
+  workflow_dispatch:
+    inputs:
+      user:
+        description: Databricks user name (email) to grant
+        default: uoldfield@gmail.com
+      catalog: { default: workspace }
+      schema: { default: pdoom }
+      warehouse_id: { default: 4f084f656bc73157 }
+      app_name: { default: pdoom }
+  push:
+    branches: [chore/grant-user]
+    paths: [.github/workflows/grant-user.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  grant:
+    runs-on: ubuntu-latest
+    env:
+      DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+      DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
+      DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+      USER_NAME: ${{ inputs.user || 'uoldfield@gmail.com' }}
+      CATALOG: ${{ inputs.catalog || 'workspace' }}
+      SCHEMA: ${{ inputs.schema || 'pdoom' }}
+      WAREHOUSE: ${{ inputs.warehouse_id || '4f084f656bc73157' }}
+      APP_NAME: ${{ inputs.app_name || 'pdoom' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: databricks/setup-cli@main
+      - name: Grant
+        run: |
+          set +e
+          case "$USER_NAME" in *[!A-Za-z0-9._@+-]*) echo "::error::odd user name"; exit 1;; esac
+          fails=0
+          note() { echo "::notice title=$1::$(printf '%s' "$2" | tr '\n' '|' | cut -c1-600)"; }
+          bad() { echo "::warning title=FAILED $1::$(printf '%s' "$2" | tr '\n' '|' | cut -c1-600)"; fails=$((fails+1)); }
+          acl() { jq -nc --arg u "$USER_NAME" --arg l "$1" '{access_control_list:[{user_name:$u, permission_level:$l}]}'; }
+
+          # 1. The app
+          out=$(databricks api patch "/api/2.0/permissions/apps/$APP_NAME" --json "$(acl CAN_MANAGE)" 2>&1) \
+            && note app "CAN_MANAGE on app $APP_NAME: $(echo "$out" | jq -c '[.access_control_list[]?|select(.user_name==env.USER_NAME)|.all_permissions[].permission_level]' 2>/dev/null)" \
+            || bad app "$out"
+
+          # 2. Unity Catalog: the schema holds the tables, the views and the metric view
+          sql() {
+            body=$(jq -nc --arg w "$WAREHOUSE" --arg s "$1" '{warehouse_id:$w,wait_timeout:"50s",statement:$s}')
+            r=$(databricks api post /api/2.0/sql/statements --json "$body" 2>&1)
+            st=$(echo "$r" | jq -r '.status.state // "ERROR"' 2>/dev/null)
+            if [ "$st" = SUCCEEDED ]; then note uc "$1"; else bad uc "$1 -> $(echo "$r" | jq -r '.status.error.message // .' 2>/dev/null)"; fi
+          }
+          U="\`$USER_NAME\`"
+          sql "GRANT USE CATALOG ON CATALOG \`$CATALOG\` TO $U"
+          sql "GRANT ALL PRIVILEGES ON SCHEMA \`$CATALOG\`.\`$SCHEMA\` TO $U"
+          sql "GRANT MANAGE ON SCHEMA \`$CATALOG\`.\`$SCHEMA\` TO $U"
+          sql "GRANT ALL PRIVILEGES ON CATALOG pdoom_lakebase TO $U"
+
+          # 3. The SQL warehouse the app and the Genie space run on
+          out=$(databricks api patch "/api/2.0/permissions/sql/warehouses/$WAREHOUSE" --json "$(acl CAN_MANAGE)" 2>&1) \
+            && note warehouse "CAN_MANAGE on warehouse $WAREHOUSE" || bad warehouse "$out"
+
+          # 4. The Genie space
+          sid=$(databricks api get /api/2.0/genie/spaces 2>/dev/null | jq -r '[.spaces[]?|select(.title=="p(doom)")][0].space_id // empty')
+          if [ -n "$sid" ]; then
+            out=$(databricks api patch "/api/2.0/permissions/genie/$sid" --json "$(acl CAN_MANAGE)" 2>&1) \
+              && note genie "CAN_MANAGE on Genie space $sid" || bad genie "$out"
+          else
+            bad genie "space titled p(doom) not found"
+          fi
+
+          # 5. The workspace folders the bundles deploy into
+          sp=$(databricks current-user me -o json | jq -r .userName)
+          for d in "/Workspace/Users/$sp/.bundle" "/Workspace/Shared/p-doom"; do
+            oid=$(databricks workspace get-status "$d" -o json 2>/dev/null | jq -r '.object_id // empty')
+            if [ -z "$oid" ]; then bad folder "$d not found"; continue; fi
+            out=$(databricks api patch "/api/2.0/permissions/directories/$oid" --json "$(acl CAN_MANAGE)" 2>&1) \
+              && note folder "CAN_MANAGE on $d" || bad folder "$d: $out"
+          done
+
+          # 6. Lakebase: a Postgres role for the user, with everything on the pdoom schema
+          out=$(scripts/pg.sh -q -v ON_ERROR_STOP=1 \
+            -c "CREATE EXTENSION IF NOT EXISTS databricks_auth;" \
+            -c "DO \$\$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '$USER_NAME') THEN PERFORM databricks_create_role('$USER_NAME', 'USER'); END IF; END \$\$;" \
+            -c "GRANT CONNECT, CREATE ON DATABASE pdoom TO \"$USER_NAME\"; GRANT USAGE, CREATE ON SCHEMA pdoom TO \"$USER_NAME\"; GRANT ALL ON ALL TABLES IN SCHEMA pdoom TO \"$USER_NAME\"; GRANT ALL ON ALL SEQUENCES IN SCHEMA pdoom TO \"$USER_NAME\"; ALTER DEFAULT PRIVILEGES IN SCHEMA pdoom GRANT ALL ON TABLES TO \"$USER_NAME\";" 2>&1 | grep -v '^::add-mask::')
+          [ "${PIPESTATUS[0]}" = 0 ] && note lakebase-role "Postgres role and grants for $USER_NAME. $out" || bad lakebase-role "$out"
+
+          # 7. The Lakebase project itself (who may see, edit and delete it)
+          out=$(databricks api patch "/api/2.0/permissions/database-projects/pdoom" --json "$(acl CAN_MANAGE)" 2>&1) \
+            && note lakebase-project "CAN_MANAGE on project pdoom" || bad lakebase-project "$out"
+
+          echo "::notice title=summary::$fails step(s) failed"
+          [ "$fails" = 0 ]
