@@ -1,0 +1,107 @@
+# Times ai_decide over REST: how long one call takes with different prompts, and whether asking
+# several times at once raises the number of answers a second or only the time each one takes.
+name: ai-decide-bench
+on:
+  workflow_dispatch:
+  push:
+    branches: [feat/ai-decide-context]
+    paths: [.github/workflows/ai-decide-bench.yml]
+permissions:
+  contents: read
+env:
+  DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+  DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
+  DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install -e backend
+      - name: Time it
+        working-directory: backend
+        run: |
+          python - <<'PY'
+          import copy, json, statistics, time
+          from concurrent.futures import ThreadPoolExecutor
+          from pdoom.models import GameState
+          from pdoom.players.ai_decide import AiDecideApi, load_questions, state_payload
+
+          ctx = {
+              "seconds_played": 26, "explored_areas": 3, "area_visits": 1, "seconds_here": 18,
+              "moved_5s": 4, "moved_15s": 9, "progress_5s": 0, "progress_15s": 3,
+              "stuck": 3, "jammed": False,
+              "recent": [{"seconds_ago": 2.0, "intent": "advance", "moved": 2, "blocked": True},
+                         {"seconds_ago": 1.4, "intent": "advance", "moved": 1, "blocked": True}],
+              "enemies_in_sight": 0, "damage_3s": 0, "damage_10s": 0, "ammo_spent_5s": 0,
+              "summary": "Your last moves did not get you anywhere: you are blocked.",
+          }
+          state = GameState.model_validate({
+              "tic": 900, "level": "E1M1", "seed": 1,
+              "player": {"health": 100, "armor": 0, "weapon": "pistol", "ammo": {"bullets": 40},
+                         "x": 1327, "y": -3290, "angle": 90},
+              "enemies": [], "pickups": [], "exit_bearing": 0,
+              "walls": {"ahead": 20, "ahead_right": 60, "right": 70, "behind_right": 300,
+                        "behind": 400, "behind_left": 300, "left": 320, "ahead_left": 300},
+              "route": {"bearing": 0, "distance": 220, "via": "portal", "remaining": 900},
+          })
+          with_ctx = state.model_copy(update={"context": ctx})
+
+          full = load_questions()
+          old = copy.deepcopy(full)
+          old["intent"]["instructions"] = full["intent"]["instructions"].split(" context is the player's memory")[0]
+          intent_only = {"intent": full["intent"]}
+          short = copy.deepcopy(full)
+          short["intent"]["instructions"] = (
+              "Which single action should the player take next, to survive and reach the exit? "
+              "Bearings are degrees from where the player faces, negative left, positive right. "
+              "walls are distances to the nearest wall; under 48 the player is pressed against it. "
+              "route.bearing points to the exit. context is the player's memory: never repeat a "
+              "blocked action, and turn toward open space when stuck."
+          )
+
+          def timed(api, st, n):
+              lat, bad = [], 0
+              for _ in range(n):
+                  t0 = time.perf_counter()
+                  try:
+                      api.run(st)
+                      lat.append(time.perf_counter() - t0)
+                  except Exception:  # noqa: BLE001
+                      bad += 1
+              return lat, bad
+
+          def line(lat, bad):
+              q = statistics.quantiles(lat, n=10)[-1] if len(lat) >= 5 else max(lat, default=0)
+              return f"median {statistics.median(lat):.2f}s p90 {q:.2f}s failed {bad}"
+
+          rows = []
+          for name, qs, st in (("original prompt, no context", old, state),
+                               ("current prompt + context", full, with_ctx),
+                               ("intent question only + context", intent_only, with_ctx),
+                               ("short prompt + context", short, with_ctx)):
+              lat, bad = timed(AiDecideApi(qs), st, 12)
+              rows.append(f"{name}: {line(lat, bad)}")
+          print("::notice title=one at a time::" + " | ".join(rows))
+
+          api = AiDecideApi(full)
+          rows = []
+          for workers in (1, 2, 3, 4):
+              lat, bad = [], 0
+              def one(_):
+                  global bad
+                  t0 = time.perf_counter()
+                  try:
+                      api.run(with_ctx)
+                      lat.append(time.perf_counter() - t0)
+                  except Exception:  # noqa: BLE001
+                      bad += 1
+              t0 = time.perf_counter()
+              with ThreadPoolExecutor(workers) as pool:
+                  list(pool.map(one, range(16)))
+              wall = time.perf_counter() - t0
+              rows.append(f"{workers} at once: {len(lat) / wall:.2f}/s, {line(lat, bad)}")
+          print("::notice title=several at once::" + " | ".join(rows))
+          PY
