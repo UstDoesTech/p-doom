@@ -10,13 +10,17 @@ import type {
   EventIn,
   GameState,
   Intent,
+  Mode,
   Outcome,
   PlayerType,
 } from "./types";
 
 export interface RunnerConfig {
   playerType: PlayerType;
-  /** A decision still pending after this long stops the player moving until it
+  /** paused: the game is held still while the player thinks, so a slow model plays the same
+   * game a fast one does, one decision at a time. realtime: the game goes on meanwhile. */
+  mode: Mode;
+  /** Realtime only: a decision still pending after this long stops the player moving until it
    * lands. Default 300 ms. Players that answer faster never notice it. */
   stopAfterMs?: number;
   engine: EngineKind;
@@ -26,7 +30,7 @@ export interface RunnerConfig {
    * is the least gap between the starts of two calls instead, since they overlap; calls are
    * spread across the time one takes if that is longer. */
   decisionIntervalMs: number;
-  /** Decision calls allowed at once. A player that takes a second to answer can be asked every
+  /** Decision calls allowed at once (realtime only: a paused game asks one at a time). A player that takes a second to answer can be asked every
    * few hundred milliseconds; each answer is acted on as it lands, and one that lands after a
    * newer one, or too late to be about the game any more, is dropped. Default 1. */
   maxInFlight?: number;
@@ -97,11 +101,14 @@ export class SessionRunner {
     await engine.start(canvas, { level: cfg.level, seed: cfg.seed });
     let session: { session_id: string };
     try {
+      if (cfg.mode === "paused" && !engine.canPause()) {
+        throw new Error("This engine build cannot pause, so paused mode would be recorded wrongly.");
+      }
       // Hold the game still while the session registers, so nobody plays unattended.
       hold();
       session = await api.createSession({
         player_type: cfg.playerType,
-        mode: "realtime",
+        mode: cfg.mode,
         engine: cfg.engine,
         level: cfg.level,
         seed: cfg.seed,
@@ -126,7 +133,7 @@ export class SessionRunner {
     let avgCallMs = 0; // how long a call has been taking, to space overlapping calls evenly
     let seq = 0;
     let appliedSeq = 0;
-    const maxInFlight = Math.max(1, cfg.maxInFlight ?? 1);
+    const maxInFlight = cfg.mode === "paused" ? 1 : Math.max(1, cfg.maxInFlight ?? 1);
     const maxStale = cfg.maxStaleTics ?? 105;
     let done = false;
     let lastState = engine.getState();
@@ -139,8 +146,11 @@ export class SessionRunner {
       // stops the walk meanwhile, so the held key does not carry on past where the state was
       // read. With overlapping calls the keys are not held on an old answer: every intent the
       // server returns has a length, and a newer answer is never far behind.
+      if (cfg.mode === "paused") engine.pause();
       const stopTimer =
-        maxInFlight === 1 ? setTimeout(() => reflex.stopMoving(), cfg.stopAfterMs ?? 300) : null;
+        cfg.mode === "realtime" && maxInFlight === 1
+          ? setTimeout(() => reflex.stopMoving(), cfg.stopAfterMs ?? 300)
+          : null;
       try {
         const decision = await api.decide(session.session_id, state, shot);
         if (done) return;
@@ -159,6 +169,7 @@ export class SessionRunner {
         hooks.onError?.(e instanceof Error ? e.message : String(e));
       } finally {
         if (stopTimer) clearTimeout(stopTimer);
+        if (cfg.mode === "paused" && !done) engine.resume();
         lastDecisionAt = performance.now();
         const took = lastDecisionAt - began;
         avgCallMs = avgCallMs ? 0.7 * avgCallMs + 0.3 * took : took;
