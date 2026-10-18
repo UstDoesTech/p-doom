@@ -26,8 +26,7 @@ export const PLAYER_TYPES = [
 ] as const;
 export type PlayerType = (typeof PLAYER_TYPES)[number];
 
-/** Every session is realtime. Sessions recorded before paused mode was removed say "paused". */
-export type Mode = "realtime";
+export type Mode = "paused" | "realtime";
 export type EngineKind = "wasm" | "mock";
 /** aborted: the player pressed Stop. abandoned: the page closed mid-game. error: the game loop
  * crashed. None counts as an attempt in p(doom), but all are stored so they can be monitored. */

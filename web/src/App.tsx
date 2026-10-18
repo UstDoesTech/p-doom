@@ -12,6 +12,7 @@ import {
   type EngineKind,
   type GameState,
   type Intent,
+  type Mode,
   type PlayerAvailability,
   type PlayerType,
   type Route,
@@ -90,6 +91,7 @@ export default function App() {
   const [setNote, setSetNote] = useState("");
   const stopSet = useRef(false);
   // null until the user types one: a local player is cheap to ask, so it decides more often.
+  const [modeOverride, setModeOverride] = useState<Mode | null>(null);
   const [gapOverride, setGapOverride] = useState<number | null>(null);
   const [callsOverride, setCallsOverride] = useState<number | null>(null);
   const [timeoutS, setTimeoutS] = useState(0);
@@ -128,6 +130,10 @@ export default function App() {
 
   const gapFor = (pt: PlayerType) =>
     gapOverride ?? (LOCAL_PLAYERS.includes(pt) ? 250 : OVERLAPPED[pt] ? 200 : 1000);
+  /** Players that answer in milliseconds run in realtime; the rest are slow enough that the game is
+   * held still while they think, unless the Mode box says otherwise. */
+  const modeFor = (pt: PlayerType): Mode =>
+    modeOverride ?? (LOCAL_PLAYERS.includes(pt) ? "realtime" : "paused");
   const callsFor = (pt: PlayerType) => Math.max(1, callsOverride ?? OVERLAPPED[pt] ?? 1);
 
   const availability = (pt: PlayerType) => players.find((p) => p.player_type === pt);
@@ -151,6 +157,7 @@ export default function App() {
       api,
       {
         playerType: pt,
+        mode: modeFor(pt),
         engine: engineKind,
         level: lvl,
         seed: sd,
@@ -508,6 +515,17 @@ export default function App() {
           <details className="advanced">
             <summary>Advanced</summary>
             <div className="controls inner">
+              <label>
+                Mode
+                <select
+                  value={modeFor(playerType)}
+                  disabled={running}
+                  onChange={(e) => setModeOverride(e.target.value as Mode)}
+                >
+                  <option value="paused">paused</option>
+                  <option value="realtime">realtime</option>
+                </select>
+              </label>
               <label>
                 Seed
                 <input

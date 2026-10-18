@@ -98,6 +98,7 @@ function fakeApi(engine: FakeEngine, failDecide = false, failCreate = false, del
 
 const cfg = (over: Partial<RunnerConfig> = {}): RunnerConfig => ({
   playerType: "rule_bot",
+  mode: "realtime",
   engine: "mock",
   level: "E1M1",
   seed: 1,
@@ -169,6 +170,44 @@ describe("SessionRunner", () => {
       delete g.addEventListener;
       delete g.removeEventListener;
     }
+  });
+
+  it("pauses the game around every decision in paused mode and records it as paused", async () => {
+    const engine = new FakeEngine(100);
+    const { api, log } = fakeApi(engine);
+    await new SessionRunner(engine, api, cfg({ mode: "paused" })).run(canvas);
+    expect(log.decidedWhilePaused.length).toBeGreaterThan(0);
+    expect(log.decidedWhilePaused.every(Boolean)).toBe(true);
+    expect(log.modes).toEqual(["paused"]);
+  });
+
+  it("refuses paused mode on an engine that cannot pause", async () => {
+    const engine = new FakeEngine(Infinity, false);
+    const { api, log } = fakeApi(engine);
+    await expect(new SessionRunner(engine, api, cfg({ mode: "paused" })).run(canvas)).rejects.toThrow(
+      /cannot pause/,
+    );
+    expect(log.created).toBe(0);
+  });
+
+  it("asks one call at a time in paused mode, whatever maxInFlight says", async () => {
+    const engine = new FakeEngine(800);
+    const { api } = fakeApi(engine);
+    let now = 0;
+    let peak = 0;
+    const inner = api.decide.bind(api);
+    api.decide = async (...a) => {
+      now += 1;
+      peak = Math.max(peak, now);
+      await new Promise((r) => setTimeout(r, 20));
+      try {
+        return await inner(...a);
+      } finally {
+        now -= 1;
+      }
+    };
+    await new SessionRunner(engine, api, cfg({ mode: "paused", maxInFlight: 3 })).run(canvas);
+    expect(peak).toBe(1);
   });
 
   it("keeps playing while a decision is pending", async () => {
