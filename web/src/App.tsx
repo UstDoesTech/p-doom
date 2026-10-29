@@ -338,7 +338,10 @@ export default function App() {
         <h1>
           <img className="logo" src="/doom-logo.png" alt="p(doom)" width={128} height={64} />
         </h1>
-        <p>Pick a player, press start, and the attempt lands in Databricks.</p>
+        <div className="strap">
+          <p>Probability that a machine completes a level</p>
+          <p className="sub">Delivering more shareholder value since 2026 by letting machines play games on our behalf.</p>
+        </div>
       </header>
 
       {error && (

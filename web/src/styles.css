@@ -59,6 +59,13 @@ h2 {
   color: var(--muted);
 }
 
+.top .sub {
+  margin-top: 2px;
+  font-size: 0.8rem;
+  font-style: italic;
+  opacity: 0.8;
+}
+
 .panel {
   background: var(--panel);
   border: 1px solid var(--line);
