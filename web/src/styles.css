@@ -448,3 +448,28 @@ progress {
 .chip.out-error {
   border-color: var(--red);
 }
+
+/* The human-only app: one column, centred. */
+main.human {
+  max-width: 980px;
+}
+
+.screens.solo {
+  margin-bottom: 16px;
+}
+
+.overlay .big {
+  font-family: "Oswald", Arial, sans-serif;
+  font-size: 28px;
+  margin: 0 0 8px;
+}
+
+.overlay p {
+  margin: 0;
+}
+
+label.inline {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}

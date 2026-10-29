@@ -1,0 +1,165 @@
+# The human-only p(doom) on Azure Container Apps. Every run builds the image and plays one game in
+# it with headless Chromium; a manual run with deploy=true also deploys to Azure.
+#
+# Needed for deploy (not for the build and test):
+#   repo variables  AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID, RESOURCE_GROUP
+#                   (federated credential for this repo; the identity needs Contributor and
+#                   User Access Administrator on the resource group, which must already exist)
+#   repo secrets    DATABRICKS_HOST, DATABRICKS_CLIENT_ID, DATABRICKS_CLIENT_SECRET
+#                       the admin service principal the other workflows use, to create the role below
+#                   HUMAN_DATABRICKS_CLIENT_ID, HUMAN_DATABRICKS_CLIENT_SECRET
+#                       a separate service principal for the Azure app. It gets write access to the
+#                       pdoom telemetry schema and nothing else.
+name: human
+on:
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: Deploy to Azure (otherwise build and test only)
+        type: boolean
+        default: false
+  push:
+    branches: [feat/human-app]
+    paths:
+      - .github/workflows/human.yml
+      - Dockerfile.human
+      - infra/human.bicep
+      - scripts/verify_human.mjs
+      - web/**
+      - backend/**
+
+permissions:
+  contents: read
+
+jobs:
+  engine:
+    uses: ./.github/workflows/engine.yml
+
+  image:
+    needs: engine
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: pdoom-engine-shim, path: engine-out }
+      - name: Check the Bicep
+        run: |
+          set +e
+          out=$(az bicep build --file infra/human.bicep --stdout 2>&1 >/dev/null)
+          code=$?
+          echo "::notice title=bicep build exit=${code}::$(printf '%s' "$out" | tr '\n' '|' | cut -c1-1500)"
+          exit $code
+      - name: Build the image
+        run: docker build -f Dockerfile.human -t pdoom-human .
+      - name: Run it without Databricks
+        run: |
+          docker run -d --name human -p 8000:8000 -e PDOOM_SINK=memory pdoom-human
+          for i in $(seq 1 30); do curl -fs localhost:8000/api/health >/dev/null && break; sleep 1; done
+          curl -fs localhost:8000/api/health
+      - name: Other players are refused
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST localhost:8000/api/sessions \
+            -H 'content-type: application/json' \
+            -d '{"player_type":"rule_bot","mode":"paused","engine":"wasm","level":"E1M1","seed":1}')
+          echo "::notice title=rule_bot session status::${code}"
+          [ "$code" = 403 ]
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - name: Play a game in Chromium
+        run: |
+          mkdir -p "$RUNNER_TEMP/v" && cp scripts/verify_human.mjs "$RUNNER_TEMP/v/"
+          cd "$RUNNER_TEMP/v" && npm init -y >/dev/null && npm i --silent playwright@1.49.1
+          npx playwright install --with-deps chromium >/dev/null
+          set +e
+          out=$(node verify_human.mjs http://localhost:8000 2>&1)
+          code=$?
+          echo "::notice title=human game exit=${code}::$(printf '%s' "$out" | tail -c 1800 | tr '\n' ' ')"
+          docker logs human 2>&1 | tail -n 15
+          exit $code
+
+  deploy:
+    needs: image
+    if: ${{ inputs.deploy }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+      DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
+      DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+      HUMAN_ID: ${{ secrets.HUMAN_DATABRICKS_CLIENT_ID }}
+      HUMAN_SECRET: ${{ secrets.HUMAN_DATABRICKS_CLIENT_SECRET }}
+      RG: ${{ vars.RESOURCE_GROUP }}
+      EP: projects/pdoom/branches/production/endpoints/primary
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: pdoom-engine-shim, path: engine-out }
+      - uses: databricks/setup-cli@main
+      - name: Lakebase endpoint host, and wake it if it is off
+        run: |
+          set -e
+          echo "::add-mask::$HUMAN_ID"
+          [[ "$HUMAN_ID" =~ ^[0-9a-f-]{36}$ ]] || { echo "::error::HUMAN_DATABRICKS_CLIENT_ID is missing or not a client ID"; exit 1; }
+          dis=$(databricks postgres get-endpoint "$EP" -o json | jq -r '.status.disabled')
+          if [ "$dis" = true ]; then
+            databricks postgres update-endpoint "$EP" spec.disabled --json '{"spec":{"disabled":false}}' -o json >/dev/null
+          fi
+          host=$(databricks postgres get-endpoint "$EP" -o json | jq -r '.status.hosts.host')
+          [ -n "$host" ] && [ "$host" != null ]
+          echo "PG_HOST=$host" >> "$GITHUB_ENV"
+      - name: Postgres role for the Azure app, write access to pdoom tables only
+        run: |
+          set +e
+          for f in databricks/lakebase/*.sql; do scripts/pg.sh -q -f "$f" >/dev/null 2>"$RUNNER_TEMP/pgerr" || { echo "::error title=lakebase $f::$(grep -v '^::add-mask::' "$RUNNER_TEMP/pgerr" | tr '\n' '|' | cut -c1-600)"; exit 1; }; done
+          scripts/pg.sh -q \
+            -c "CREATE EXTENSION IF NOT EXISTS databricks_auth;" \
+            -c "DO \$\$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '$HUMAN_ID') THEN PERFORM databricks_create_role('$HUMAN_ID', 'SERVICE_PRINCIPAL'); END IF; END \$\$;" \
+            -c "GRANT USAGE ON SCHEMA pdoom TO \"$HUMAN_ID\"; GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA pdoom TO \"$HUMAN_ID\"; ALTER DEFAULT PRIVILEGES IN SCHEMA pdoom GRANT SELECT, INSERT, UPDATE ON TABLES TO \"$HUMAN_ID\";" >"$RUNNER_TEMP/pgout" 2>&1
+          code=$?
+          echo "::notice title=lakebase role exit=${code}::$(grep -v '^::add-mask::' "$RUNNER_TEMP/pgout" | tr '\n' '|' | cut -c1-600)"
+          exit $code
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Registry, identity and environment
+        run: |
+          set -e
+          echo "::add-mask::$HUMAN_SECRET"
+          az deployment group create -g "$RG" -n pdoom-human-infra -f infra/human.bicep -o none \
+            -p image= databricksHost="$DATABRICKS_HOST" databricksClientId="$HUMAN_ID" \
+               databricksClientSecret="$HUMAN_SECRET" pgHost="$PG_HOST"
+          acr=$(az deployment group show -g "$RG" -n pdoom-human-infra --query properties.outputs.registry.value -o tsv)
+          echo "ACR=$acr" >> "$GITHUB_ENV"
+      - name: Build the image in the registry
+        run: az acr build -r "$ACR" -t "pdoom-human:${{ github.sha }}" -f Dockerfile.human . --no-logs
+      - name: Create or update the app
+        run: |
+          set -e
+          server=$(az acr show -n "$ACR" --query loginServer -o tsv)
+          az deployment group create -g "$RG" -n pdoom-human-app -f infra/human.bicep -o none \
+            -p image="$server/pdoom-human:${{ github.sha }}" databricksHost="$DATABRICKS_HOST" \
+               databricksClientId="$HUMAN_ID" databricksClientSecret="$HUMAN_SECRET" \
+               pgHost="$PG_HOST" modelVersion="${{ github.sha }}"
+          url=$(az deployment group show -g "$RG" -n pdoom-human-app --query properties.outputs.url.value -o tsv)
+          echo "APP_URL=$url" >> "$GITHUB_ENV"
+          echo "::notice title=human app::$url"
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - name: Play a game on the deployed app
+        run: |
+          mkdir -p "$RUNNER_TEMP/v" && cp scripts/verify_human.mjs "$RUNNER_TEMP/v/"
+          cd "$RUNNER_TEMP/v" && npm init -y >/dev/null && npm i --silent playwright@1.49.1
+          npx playwright install --with-deps chromium >/dev/null
+          for i in $(seq 1 30); do curl -fs "$APP_URL/api/health" >/dev/null && break; sleep 5; done
+          set +e
+          out=$(node verify_human.mjs "$APP_URL" 2>&1)
+          code=$?
+          echo "::notice title=deployed human game exit=${code}::$(printf '%s' "$out" | tail -c 1800 | tr '\n' ' ')"
+          exit $code
+      - name: Did the game reach Lakebase
+        run: |
+          out=$(scripts/pg.sh -At -c "SELECT count(*) || ' human wasm sessions in the last 10 minutes' FROM pdoom.doom_sessions WHERE player_type='human' AND engine='wasm' AND started_at > now() - interval '10 minutes'" 2>&1 | grep -v '^::add-mask::')
+          echo "::notice title=lakebase rows::${out}"

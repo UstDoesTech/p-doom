@@ -22,4 +22,8 @@ Databricks
   An end call is idempotent. Sessions idle for 15 minutes are swept to `abandoned`; the page's
   `pagehide` sends a keepalive end as `abandoned`; a crashed loop ends as `error`.
 - `/api/health` reports `ok` or `degraded` from a cached Lakebase ping, plus open session count.
+- Human-only edition: the same backend with `PDOOM_HUMAN_ONLY=true`, built from `Dockerfile.human` and run
+  as its own Container App (`infra/human.bicep`). It reaches Lakebase as its own service principal. Session
+  creation is validated (player, engine, level, seed) and rate limited in `pdoom/limits.py`; the player
+  types and `/decide` are closed. The web app is `HumanApp.tsx`, chosen at build time in `main.tsx`.
 - The page can run a set (roster x seed range) one game after another; there is no headless runner.

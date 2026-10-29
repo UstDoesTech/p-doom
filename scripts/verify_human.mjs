@@ -1,0 +1,55 @@
+// Plays one short human game in headless Chromium against a running human-only app and prints one
+// JSON line. Exit 0 only if the game started, took keyboard input, ended, and the server accepted the
+// end of the session. Usage: node verify_human.mjs <app url> [seconds to play, default 8]
+import { chromium } from "playwright";
+
+const [url, secs = "8"] = process.argv.slice(2);
+const report = { pageErrors: [], failed: [], ok: false };
+const browser = await chromium.launch({ channel: "chromium", args: ["--enable-unsafe-swiftshader", "--autoplay-policy=no-user-gesture-required"] });
+const guard = setTimeout(() => { report.timeout = true; console.log(JSON.stringify(report)); process.exit(2); }, 150000);
+try {
+  const page = await (await browser.newContext()).newPage();
+  page.on("pageerror", (e) => report.pageErrors.push(String(e).slice(0, 300)));
+  page.on("response", (r) => { if (r.status() >= 400 && !r.url().endsWith("favicon.ico")) report.failed.push(`${r.status()} ${r.url().slice(-60)}`); });
+  let created = null;
+  let ended = null;
+  page.on("response", async (r) => {
+    if (r.request().method() !== "POST") return;
+    if (r.url().endsWith("/api/sessions") && r.ok()) {
+      try { created = JSON.parse(r.request().postData() || "{}"); } catch {}
+    }
+    if (r.url().endsWith("/end")) ended = { status: r.status(), body: JSON.parse(r.request().postData() || "{}") };
+  });
+  const health = await (await page.request.get(`${url}/api/health`)).json();
+  report.health = health;
+  if (!health.human_only) throw new Error("this is not a human-only deployment");
+
+  await page.goto(url, { waitUntil: "load" });
+  await page.getByRole("button", { name: /^Play$/ }).click();
+  await page.getByText("Click the game to take control").or(page.getByText(/^Playing/)).first().waitFor({ timeout: 60000 });
+  await page.waitForFunction(() => document.activeElement?.id === "canvas", null, { timeout: 30000 });
+  for (let i = 0; i < Number(secs) * 4; i++) {
+    await page.keyboard.down("ArrowUp");
+    await page.waitForTimeout(150);
+    await page.keyboard.up("ArrowUp");
+    await page.keyboard.press(i % 8 < 4 ? "ArrowLeft" : "ArrowRight");
+    await page.waitForTimeout(100);
+  }
+  await page.getByRole("button", { name: "Stop" }).click();
+  await page.getByRole("status").first().waitFor({ timeout: 30000 });
+  report.result = (await page.getByRole("status").first().innerText()).replace(/\s+/g, " ");
+  await page.waitForTimeout(500);
+  report.created = created;
+  report.ended = ended;
+  report.ok =
+    !report.pageErrors.length &&
+    created?.player_type === "human" && created?.engine === "wasm" &&
+    ended?.status === 200 && !!ended?.body?.outcome;
+} catch (e) {
+  report.error = String(e).slice(0, 400);
+} finally {
+  clearTimeout(guard);
+  await browser.close();
+}
+console.log(JSON.stringify(report));
+process.exit(report.ok ? 0 : 1);

@@ -29,6 +29,7 @@ class Session:
     last_seen_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     decisions: int = 0
     decision_errors: int = 0
+    events: int = 0
     pending_decisions: list[DecisionRow] = field(default_factory=list)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
