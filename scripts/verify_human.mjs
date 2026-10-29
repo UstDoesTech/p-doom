@@ -12,7 +12,7 @@ let created = null;
 let ended = null;
 try {
   page = await (await browser.newContext()).newPage();
-  page.on("console", (m) => { if (["error", "warning"].includes(m.type())) report.console.push(m.text().slice(0, 200)); });
+  page.on("console", (m) => { if (!/GL Driver|ScriptProcessor/.test(m.text())) report.console.push(m.type() + ": " + m.text().slice(0, 200)); });
   page.on("pageerror", (e) => report.pageErrors.push(String(e).slice(0, 300)));
   page.on("response", (r) => { if (r.status() >= 400 && !r.url().endsWith("favicon.ico")) report.failed.push(`${r.status()} ${r.url().slice(-60)}`); });
   page.on("response", async (r) => {
@@ -37,10 +37,18 @@ try {
     await page.keyboard.press(i % 8 < 4 ? "ArrowLeft" : "ArrowRight");
     await page.waitForTimeout(100);
   }
+  // How responsive is the page while it plays? Count timer and frame callbacks over 3 s.
+  report.rates = await page.evaluate(() => new Promise((res) => {
+    let t = 0, f = 0;
+    const iv = setInterval(() => t++, 30);
+    const raf = () => { f++; requestAnimationFrame(raf); };
+    requestAnimationFrame(raf);
+    setTimeout(() => { clearInterval(iv); res({ timers30ms_per_3s: t, frames_per_3s: f }); }, 3000);
+  }));
   await page.getByRole("button", { name: "Stop" }).click();
   const stoppedAt = Date.now();
   report.statusTrail = [];
-  for (let i = 0; i < 24; i++) {
+  for (let i = 0; i < 6; i++) {
     if (await page.getByRole("status").count()) break;
     await page.waitForTimeout(5000);
     report.statusTrail.push(((Date.now() - stoppedAt) / 1000).toFixed(0) + "s " +
