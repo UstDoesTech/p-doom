@@ -135,4 +135,4 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = if (!empty(image)) {
 
 output registry string = acr.name
 output registryServer string = acr.properties.loginServer
-output url string = empty(image) ? '' : 'https://${app.properties.configuration.ingress.fqdn}'
+output url string = empty(image) ? '' : 'https://${app!.properties.configuration.ingress.fqdn}'

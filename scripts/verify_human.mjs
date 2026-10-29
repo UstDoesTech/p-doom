@@ -4,15 +4,17 @@
 import { chromium } from "playwright";
 
 const [url, secs = "8"] = process.argv.slice(2);
-const report = { pageErrors: [], failed: [], ok: false };
+const report = { pageErrors: [], failed: [], console: [], ok: false };
 const browser = await chromium.launch({ channel: "chromium", args: ["--enable-unsafe-swiftshader", "--autoplay-policy=no-user-gesture-required"] });
 const guard = setTimeout(() => { report.timeout = true; console.log(JSON.stringify(report)); process.exit(2); }, 150000);
+let page;
+let created = null;
+let ended = null;
 try {
-  const page = await (await browser.newContext()).newPage();
+  page = await (await browser.newContext()).newPage();
+  page.on("console", (m) => { if (["error", "warning"].includes(m.type())) report.console.push(m.text().slice(0, 200)); });
   page.on("pageerror", (e) => report.pageErrors.push(String(e).slice(0, 300)));
   page.on("response", (r) => { if (r.status() >= 400 && !r.url().endsWith("favicon.ico")) report.failed.push(`${r.status()} ${r.url().slice(-60)}`); });
-  let created = null;
-  let ended = null;
   page.on("response", async (r) => {
     if (r.request().method() !== "POST") return;
     if (r.url().endsWith("/api/sessions") && r.ok()) {
@@ -47,6 +49,9 @@ try {
     ended?.status === 200 && !!ended?.body?.outcome;
 } catch (e) {
   report.error = String(e).slice(0, 400);
+  try { report.page = (await page.locator("main").innerText()).replace(/\s+/g, " ").slice(0, 500); } catch {}
+  report.created = created;
+  report.ended = ended;
 } finally {
   clearTimeout(guard);
   await browser.close();
