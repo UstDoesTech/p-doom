@@ -45,6 +45,14 @@ try {
     requestAnimationFrame(raf);
     setTimeout(() => { clearInterval(iv); res({ timers30ms_per_3s: t, frames_per_3s: f }); }, 3000);
   }));
+  report.beforeStop = await page.evaluate(() => {
+    const b = [...document.querySelectorAll("button")].find((x) => x.textContent.trim() === "Stop");
+    const r = b?.getBoundingClientRect();
+    const top = r && document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+    return { found: !!b, rect: r && [r.x, r.y, r.width, r.height].map(Math.round), top: top && (top.tagName + "." + top.className + "#" + top.id),
+      lock: document.pointerLockElement && document.pointerLockElement.tagName, active: document.activeElement?.tagName };
+  });
+  await page.evaluate(() => document.addEventListener("click", (e) => console.log("[pdoom] click on " + e.target.tagName + "." + e.target.className), true));
   await page.getByRole("button", { name: "Stop" }).click();
   const stoppedAt = Date.now();
   report.statusTrail = [];
