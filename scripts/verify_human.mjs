@@ -12,7 +12,7 @@ let created = null;
 let ended = null;
 try {
   page = await (await browser.newContext()).newPage();
-  page.on("console", (m) => { if (report.console.length < 6 && !/GL Driver|ScriptProcessor/.test(m.text())) report.console.push(m.type() + ": " + m.text().slice(0, 120)); });
+  page.on("console", (m) => { if (/\[pdoom\]/.test(m.text()) || (report.console.length < 3 && m.type() === 'error')) report.console.push(m.type() + ": " + m.text().slice(0, 120)); });
   page.on("pageerror", (e) => report.pageErrors.push(String(e).slice(0, 300)));
   page.on("response", (r) => { if (r.status() >= 400 && !r.url().endsWith("favicon.ico")) report.failed.push(`${r.status()} ${r.url().slice(-60)}`); });
   page.on("response", async (r) => {
