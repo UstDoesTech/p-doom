@@ -104,6 +104,12 @@ export class WasmEngine implements Engine {
         printErr: (t: string) => console.warn(t),
       } as unknown as EmscriptenModule;
       (window as unknown as { Module: EmscriptenModule }).Module = mod;
+      // SDL grabs the mouse (pointer lock) once the game has the keyboard. Doom is played with
+      // the keyboard here, and a locked pointer sends every click to the canvas, so the Stop and
+      // Play buttons stop working. Let go whenever it is taken.
+      document.addEventListener("pointerlockchange", () => {
+        if (document.pointerLockElement) document.exitPointerLock();
+      });
       const script = document.createElement("script");
       script.src = this.baseUrl + this.loader;
       script.onerror = () => {

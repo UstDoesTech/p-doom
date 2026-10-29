@@ -88,7 +88,6 @@ export class SessionRunner {
   ) {}
 
   abort(): void {
-    console.log('[pdoom] abort');
     this.aborted = true;
   }
 
@@ -239,12 +238,10 @@ export class SessionRunner {
       }, cfg.tickMs ?? 30);
     });
 
-    console.log('[pdoom] loop ended', outcome);
     globalThis.removeEventListener?.("pagehide", onHide);
     reflex.releaseAll();
     human.detach();
     hold();
-    console.log('[pdoom] held');
     let kills = 0;
     try {
       kills = engine.kills();
@@ -261,9 +258,7 @@ export class SessionRunner {
     // The keepalive call already ended an abandoned session; the page is going away.
     if (outcome === "abandoned") return result;
 
-    console.log('[pdoom] kills', kills);
     await telemetry.stop();
-    console.log('[pdoom] telemetry stopped');
     if (telemetry.pending > 0) hooks.onError?.(`${telemetry.pending} events were not delivered`);
     await this.endWithRetry(session.session_id, outcome, result, decisionTimeouts);
     return result;
