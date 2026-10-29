@@ -4,7 +4,7 @@
 import { chromium } from "playwright";
 
 const [url, secs = "8"] = process.argv.slice(2);
-const report = { pageErrors: [], failed: [], console: [], ok: false };
+const report = { rates: null, pageErrors: [], failed: [], ok: false, console: [] };
 const browser = await chromium.launch({ channel: "chromium", args: ["--enable-unsafe-swiftshader", "--autoplay-policy=no-user-gesture-required"] });
 const guard = setTimeout(() => { report.timeout = true; console.log(JSON.stringify(report)); process.exit(2); }, 280000);
 let page;
@@ -12,7 +12,7 @@ let created = null;
 let ended = null;
 try {
   page = await (await browser.newContext()).newPage();
-  page.on("console", (m) => { if (!/GL Driver|ScriptProcessor/.test(m.text())) report.console.push(m.type() + ": " + m.text().slice(0, 200)); });
+  page.on("console", (m) => { if (report.console.length < 6 && !/GL Driver|ScriptProcessor/.test(m.text())) report.console.push(m.type() + ": " + m.text().slice(0, 120)); });
   page.on("pageerror", (e) => report.pageErrors.push(String(e).slice(0, 300)));
   page.on("response", (r) => { if (r.status() >= 400 && !r.url().endsWith("favicon.ico")) report.failed.push(`${r.status()} ${r.url().slice(-60)}`); });
   page.on("response", async (r) => {

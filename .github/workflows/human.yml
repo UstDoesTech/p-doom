@@ -74,7 +74,7 @@ jobs:
           set +e
           out=$(node verify_human.mjs http://localhost:8000 2>&1)
           code=$?
-          echo "::notice title=human game exit=${code}::$(printf '%s' "$out" | tail -c 1800 | tr '\n' ' ')"
+          echo "::notice title=human game exit=${code}::$(printf '%s' "$out" | head -c 6000 | tr '\n' ' ')"
           docker logs human 2>&1 | tail -n 15
           exit $code
 
