@@ -4,7 +4,7 @@ import type { Engine } from "./engine/Engine";
 import { MockEngine } from "./engine/MockEngine";
 import { WasmEngine } from "./engine/WasmEngine";
 import { planSet, runSet } from "./batch";
-import { nextLevel } from "./levels";
+import { EPISODE_TITLES, MAP_NAMES, OUTCOME_LABEL, nextLevel } from "./levels";
 import { SessionRunner, type RunResult } from "./runner";
 import {
   PLAYER_TYPES,
@@ -39,28 +39,6 @@ interface LogLine {
 }
 
 type Tab = "watch" | "batch";
-
-const MAP_NAMES: Record<number, string[]> = {
-  1: ["Hangar", "Nuclear Plant", "Toxin Refinery", "Command Control", "Phobos Lab", "Central Processing", "Computer Station", "Phobos Anomaly", "Military Base"],
-  2: ["Deimos Anomaly", "Containment Area", "Refinery", "Deimos Lab", "Command Center", "Halls of the Damned", "Spawning Vats", "Tower of Babel", "Fortress of Mystery"],
-  3: ["Hell Keep", "Slough of Despair", "Pandemonium", "House of Pain", "Unholy Cathedral", "Mt. Erebus", "Limbo", "Dis", "Warrens"],
-  4: ["Hell Beneath", "Perfect Hatred", "Sever the Wicked", "Unruly Evil", "They Will Repent", "Against Thee Wickedly", "And Hell Followed", "Unto the Cruel", "Fear"],
-};
-const EPISODE_TITLES: Record<number, string> = {
-  1: "Episode 1: Knee-Deep in the Dead",
-  2: "Episode 2: The Shores of Hell",
-  3: "Episode 3: Inferno",
-  4: "Episode 4: Thy Flesh Consumed",
-};
-
-const OUTCOME_LABEL: Record<string, string> = {
-  cleared: "Cleared",
-  died: "Died",
-  timeout: "Timed out",
-  aborted: "Stopped",
-  abandoned: "Abandoned",
-  error: "Error",
-};
 
 const VIA_LABEL: Record<string, string> = {
   portal: "teleporter",
@@ -360,7 +338,10 @@ export default function App() {
         <h1>
           <img className="logo" src="/doom-logo.png" alt="p(doom)" width={128} height={64} />
         </h1>
-        <p>Pick a player, press start, and the attempt lands in Databricks.</p>
+        <div className="strap">
+          <p>Probability that a machine completes a level</p>
+          <p className="sub">Delivering more shareholder value since 2026 by letting machines play games on our behalf.</p>
+        </div>
       </header>
 
       {error && (

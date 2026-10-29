@@ -40,6 +40,15 @@ class Settings(BaseSettings):
     static_dir: str = ""
     cors_origins: list[str] = ["http://localhost:5173"]
 
+    # The public app for human players. Only human sessions on the real engine are accepted, no
+    # player is built, and the limits below apply. A value of 0 for a limit means "the default for
+    # this mode": none in the full app, the figures in HUMAN_DEFAULTS in human-only mode.
+    human_only: bool = False
+    trust_proxy: bool = False  # count requests by the X-Forwarded-For the ingress adds
+    max_open_sessions: int = 0
+    sessions_per_minute: int = 0  # new sessions per client address
+    max_events_per_session: int = 0
+
     session_ttl_s: int = 900  # idle this long and the session is recorded as abandoned
     sweep_interval_s: int = 60
 

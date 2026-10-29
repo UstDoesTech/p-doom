@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import threading
 import time
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
-from fastapi import APIRouter, FastAPI, HTTPException
+from fastapi import APIRouter, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -18,6 +19,7 @@ from . import __version__
 from .config import Settings, get_settings
 from .databricks_sql import SqlRunner
 from .lakebase import FanoutSink, PgSink, TokenSource
+from .limits import RateLimiter, client_ip
 from .models import (
     CreateSession,
     DecideRequest,
@@ -36,6 +38,16 @@ from .sessions import SessionStore
 from .telemetry import JsonlSink, MemorySink, SqlSink, TelemetrySink
 
 log = logging.getLogger("pdoom")
+
+# What a public, human-only app allows when the settings leave a limit at 0. A person at 35 tics a
+# second sampled every 5 tics sends 7 events a second, so 60 000 is about two hours of play.
+HUMAN_DEFAULTS = {
+    "max_open_sessions": 300,
+    "sessions_per_minute": 20,
+    "max_events_per_session": 60_000,
+}
+LEVEL = re.compile(r"E[1-4]M[1-9]")
+MAX_SEED = 2**31 - 1
 
 
 def build_lakebase_sink(settings: Settings) -> PgSink:
@@ -68,6 +80,32 @@ def build_sink(settings: Settings, sql: SqlRunner | None) -> TelemetrySink:
     return MemorySink()
 
 
+def human_registry() -> PlayerRegistry:
+    """The registry of the human-only app: only people, so no model or warehouse is needed."""
+    reg = PlayerRegistry()
+    for pt in PlayerType:
+        reason = (
+            "Humans play in the browser; no decisions needed"
+            if pt == PlayerType.human
+            else "This app is for human players only"
+        )
+        reg.mark_unavailable(pt, 400 if pt == PlayerType.human else 403, reason)
+    return reg
+
+
+def check_human_session(body: CreateSession) -> None:
+    """What the public app accepts: a person, on the real engine, on a real level. Anything else
+    would put junk in the same tables the analysis reads."""
+    if body.player_type != PlayerType.human:
+        raise HTTPException(403, "This app is for human players only")
+    if body.engine != "wasm":
+        raise HTTPException(422, "Only the Doom engine is accepted here")
+    if not LEVEL.fullmatch(body.level):
+        raise HTTPException(422, "Unknown level")
+    if abs(body.seed) > MAX_SEED:
+        raise HTTPException(422, "Seed out of range")
+
+
 def create_app(
     settings: Settings | None = None,
     sink: TelemetrySink | None = None,
@@ -80,7 +118,13 @@ def create_app(
         else None
     )
     sink = sink or build_sink(settings, sql)
-    players = players or build_registry(settings, sql)
+    if players is None:
+        players = human_registry() if settings.human_only else build_registry(settings, sql)
+    human_only = settings.human_only
+    limit = {
+        k: getattr(settings, k) or (HUMAN_DEFAULTS[k] if human_only else 0) for k in HUMAN_DEFAULTS
+    }
+    new_sessions = RateLimiter(limit["sessions_per_minute"])
     store = SessionStore(settings.model_version, settings.session_ttl_s)
 
     def sweep() -> int:
@@ -157,6 +201,7 @@ def create_app(
             ],
             "open_sessions": len(store),
             "model_version": settings.model_version,
+            "human_only": human_only,
         }
 
     @api.get("/players")
@@ -164,7 +209,19 @@ def create_app(
         return players.describe()
 
     @api.post("/sessions", response_model=SessionCreated, status_code=201)
-    def create_session(body: CreateSession) -> SessionCreated:
+    def create_session(body: CreateSession, request: Request) -> SessionCreated:
+        if human_only:
+            check_human_session(body)
+            who = client_ip(
+                request.headers.get("x-forwarded-for"),
+                request.client.host if request.client else None,
+                settings.trust_proxy,
+            )
+            if not new_sessions.allow(who):
+                raise HTTPException(429, "Too many new games from this address. Wait a minute.")
+            cap = limit["max_open_sessions"]
+            if cap and len(store) >= cap:
+                raise HTTPException(503, "The arena is full. Try again in a few minutes.")
         if body.player_type != PlayerType.human:
             try:
                 players.get(body.player_type)
@@ -181,6 +238,8 @@ def create_app(
 
     @api.post("/sessions/{session_id}/decide", response_model=DecideResponse)
     def decide(session_id: str, body: DecideRequest) -> DecideResponse:
+        if human_only:
+            raise HTTPException(403, "This app is for human players only")
         session = session_or_404(session_id)
         try:
             player = players.get(session.player_type)
@@ -219,12 +278,17 @@ def create_app(
     @api.post("/sessions/{session_id}/events", status_code=202)
     def events(session_id: str, body: EventsRequest) -> dict[str, int]:
         session = session_or_404(session_id)
+        cap = limit["max_events_per_session"]
+        if cap and session.events + len(body.events) > cap:
+            raise HTTPException(429, "That is as many events as one game can send")
         now = datetime.now(UTC)
         rows = [
             EventRow(session_id=session.id, **{**e.model_dump(), "ts": e.ts or now})
             for e in body.events
         ]
         _flush(session, sink, events=rows)
+        with session.lock:
+            session.events += len(rows)
         return {"accepted": len(rows)}
 
     @api.post("/sessions/{session_id}/end")

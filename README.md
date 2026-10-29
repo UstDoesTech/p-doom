@@ -36,7 +36,8 @@ With `PDOOM_SINK=jsonl` nothing needs Databricks. For Databricks: set the `DATAB
 | `tool_agent` | LLM function-calling loop (scan tools, then `act`). Unit tested with a fake client; set `PDOOM_AGENT_ENDPOINT` to a tool-calling chat endpoint. Never run against a real endpoint |
 | `supervisor` | Runs rule_bot every call, sends navigation and combat to the first available learned worker and keeps stuck and pickup with rule_bot; falls back to rule_bot if the worker fails. Unit tested |
 | Bundle, `app.yml`, `databricks.yml` workflows | Run |
-| Bicep, Dockerfile, `deploy.yml` (Azure) | Never validated or run |
+| Human-only app (`Dockerfile.human`, `infra/human.bicep`, `human.yml`) | Backend mode and web UI unit tested; played end to end in a browser against a stand-in engine. The image build, the Bicep (beyond `az bicep build`) and the Azure and Lakebase-role steps have not run yet |
+| Bicep, Dockerfile, `deploy.yml` (Azure, the full app) | Never validated or run |
 
 Mock arena sessions carry `engine = 'mock'`. Exclude them from every result.
 
@@ -45,6 +46,23 @@ Mock arena sessions carry `engine = 'mock'`. Exclude them from every result.
 Run the `app` workflow (Actions, workflow_dispatch). It needs the three `DATABRICKS_*` secrets and a
 service principal that is a workspace admin. The app is `pdoom` in the bundle at `databricks/`; its URL is
 in the `app status` annotation. Opening it needs a workspace login with CAN_USE on the app.
+
+## Human-only app (Azure Container Apps)
+
+A separate, public edition for people only. It is the same code with `PDOOM_HUMAN_ONLY=true` and a web
+build with `VITE_HUMAN_ONLY=true`: one page, a Play button, real Doom, keyboard. The server accepts only
+`human` sessions on the `wasm` engine with a real level and seed, refuses `/decide`, and limits new games per
+address (20 a minute), open games (300) and events per game (60 000); set `PDOOM_TRUST_PROXY` behind a proxy so
+the address is read from `X-Forwarded-For`. Games go to the same Lakebase tables as the full app, with
+`player_type = 'human'`.
+
+Run the `human` workflow. Without `deploy` it builds `Dockerfile.human`, checks `infra/human.bicep`, runs the
+container, and plays a game in headless Chromium. With `deploy=true` it also creates a Postgres role for a
+dedicated service principal (insert and update on schema `pdoom` only), deploys the registry, identity and
+Container App, and plays a game on the deployed URL. It needs the Azure variables and the
+`HUMAN_DATABRICKS_CLIENT_ID` / `HUMAN_DATABRICKS_CLIENT_SECRET` secrets listed at the top of
+`.github/workflows/human.yml`. The service principal must be allowed to request Lakebase credentials for the
+project; the workflow does not grant that. One replica only, as above. The shareware WAD has episode 1 only.
 
 ## Telemetry path
 
