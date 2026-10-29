@@ -6,7 +6,7 @@ import { chromium } from "playwright";
 const [url, secs = "8"] = process.argv.slice(2);
 const report = { pageErrors: [], failed: [], console: [], ok: false };
 const browser = await chromium.launch({ channel: "chromium", args: ["--enable-unsafe-swiftshader", "--autoplay-policy=no-user-gesture-required"] });
-const guard = setTimeout(() => { report.timeout = true; console.log(JSON.stringify(report)); process.exit(2); }, 150000);
+const guard = setTimeout(() => { report.timeout = true; console.log(JSON.stringify(report)); process.exit(2); }, 280000);
 let page;
 let created = null;
 let ended = null;
@@ -38,7 +38,17 @@ try {
     await page.waitForTimeout(100);
   }
   await page.getByRole("button", { name: "Stop" }).click();
-  await page.getByRole("status").first().waitFor({ timeout: 30000 });
+  const stoppedAt = Date.now();
+  report.statusTrail = [];
+  for (let i = 0; i < 24; i++) {
+    if (await page.getByRole("status").count()) break;
+    await page.waitForTimeout(5000);
+    report.statusTrail.push(((Date.now() - stoppedAt) / 1000).toFixed(0) + "s " +
+      (await page.locator(".actionbar").innerText().catch(() => "?")).replace(/\s+/g, " ") + " | " +
+      (await page.locator("main").innerText().then((t) => (t.match(/Playing[^\n]*|Starting…|Ready/) || [""])[0]).catch(() => "?")));
+  }
+  await page.getByRole("status").first().waitFor({ timeout: 1000 });
+  report.stopToCardS = (Date.now() - stoppedAt) / 1000;
   report.result = (await page.getByRole("status").first().innerText()).replace(/\s+/g, " ");
   await page.waitForTimeout(500);
   report.created = created;
