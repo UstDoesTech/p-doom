@@ -2,9 +2,15 @@
 # it with headless Chromium; a manual run with deploy=true also deploys to Azure.
 #
 # Needed for deploy (not for the build and test):
-#   repo variables  AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID, RESOURCE_GROUP
-#                   (federated credential for this repo; the identity needs Contributor and
-#                   User Access Administrator on the resource group, which must already exist)
+#   repo secrets    AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID
+#                   (an app registration with a federated credential for this repo, which is
+#                   UstDoesTech/p-doom, not the playground repo; it needs Contributor and User
+#                   Access Administrator on the resource group)
+#                   Repo variables RESOURCE_GROUP and ACR_NAME are optional. They default to the playground's
+#                   rg-personal-n-ust-ust-built-on-playground and its existing registry
+#                   builtonplayground, which this app reuses together with the Container Apps
+#                   environment managedEnvironment-rgpersonalnustu-b3e2. Nothing is created but a
+#                   managed identity, its AcrPull role and the app.
 #   repo secrets    DATABRICKS_HOST, DATABRICKS_CLIENT_ID, DATABRICKS_CLIENT_SECRET
 #                       the admin service principal the other workflows use, to create the role below
 #                   HUMAN_DATABRICKS_CLIENT_ID, HUMAN_DATABRICKS_CLIENT_SECRET
@@ -83,13 +89,17 @@ jobs:
     if: ${{ inputs.deploy }}
     runs-on: ubuntu-latest
     timeout-minutes: 40
+    permissions:
+      id-token: write
+      contents: read
     env:
       DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
       DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
       DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
       HUMAN_ID: ${{ secrets.HUMAN_DATABRICKS_CLIENT_ID }}
       HUMAN_SECRET: ${{ secrets.HUMAN_DATABRICKS_CLIENT_SECRET }}
-      RG: ${{ vars.RESOURCE_GROUP }}
+      RG: ${{ vars.RESOURCE_GROUP || 'rg-personal-n-ust-ust-built-on-playground' }}
+      ACR: ${{ vars.ACR_NAME || 'builtonplayground' }}
       EP: projects/pdoom/branches/production/endpoints/primary
     steps:
       - uses: actions/checkout@v4
@@ -121,26 +131,20 @@ jobs:
           exit $code
       - uses: azure/login@v2
         with:
-          client-id: ${{ vars.AZURE_CLIENT_ID }}
-          tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-      - name: Registry, identity and environment
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Build the image in the existing registry
         run: |
-          set -e
           echo "::add-mask::$HUMAN_SECRET"
-          az deployment group create -g "$RG" -n pdoom-human-infra -f infra/human.bicep -o none \
-            -p image= databricksHost="$DATABRICKS_HOST" databricksClientId="$HUMAN_ID" \
-               databricksClientSecret="$HUMAN_SECRET" pgHost="$PG_HOST"
-          acr=$(az deployment group show -g "$RG" -n pdoom-human-infra --query properties.outputs.registry.value -o tsv)
-          echo "ACR=$acr" >> "$GITHUB_ENV"
-      - name: Build the image in the registry
-        run: az acr build -r "$ACR" -t "pdoom-human:${{ github.sha }}" -f Dockerfile.human . --no-logs
+          az acr build -r "$ACR" -t "pdoom-human:${{ github.sha }}" -f Dockerfile.human . --no-logs
       - name: Create or update the app
         run: |
           set -e
+          echo "::add-mask::$HUMAN_SECRET"
           server=$(az acr show -n "$ACR" --query loginServer -o tsv)
           az deployment group create -g "$RG" -n pdoom-human-app -f infra/human.bicep -o none \
-            -p image="$server/pdoom-human:${{ github.sha }}" databricksHost="$DATABRICKS_HOST" \
+            -p acrName="$ACR" image="$server/pdoom-human:${{ github.sha }}" databricksHost="$DATABRICKS_HOST" \
                databricksClientId="$HUMAN_ID" databricksClientSecret="$HUMAN_SECRET" \
                pgHost="$PG_HOST" modelVersion="${{ github.sha }}"
           url=$(az deployment group show -g "$RG" -n pdoom-human-app --query properties.outputs.url.value -o tsv)

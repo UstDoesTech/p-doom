@@ -1,11 +1,18 @@
-# Untested. Needs an Azure app registration with a federated credential for this repo, and the
-# repo variables AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID, ACR_NAME, RESOURCE_GROUP.
+# Builds the full p(doom) app (Dockerfile) into the playground's existing registry and rolls out
+# infra/main.bicep. Untested. Needs the repo variables AZURE_CLIENT_ID, AZURE_TENANT_ID,
+# AZURE_SUBSCRIPTION_ID (a federated credential for this repo) and, for the app's Databricks login,
+# the secrets DATABRICKS_HOST, DATABRICKS_CLIENT_ID and DATABRICKS_CLIENT_SECRET.
+# Repo variables RESOURCE_GROUP and ACR_NAME are optional; they default to the playground's resource group and
+# its registry builtonplayground, which the app reuses along with the shared Container Apps environment.
 name: deploy
 on:
   workflow_dispatch:
 permissions:
   id-token: write
   contents: read
+env:
+  RG: ${{ vars.RESOURCE_GROUP || 'rg-personal-n-ust-ust-built-on-playground' }}
+  ACR: ${{ vars.ACR_NAME || 'builtonplayground' }}
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -13,10 +20,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: azure/login@v2
         with:
-          client-id: ${{ vars.AZURE_CLIENT_ID }}
-          tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-      - run: az acr build -r "${{ vars.ACR_NAME }}" -t pdoom:${{ github.sha }} .
-      - run: >
-          az containerapp update -n pdoom-app -g "${{ vars.RESOURCE_GROUP }}"
-          --image "${{ vars.ACR_NAME }}.azurecr.io/pdoom:${{ github.sha }}"
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - run: az acr build -r "$ACR" -t "pdoom:${{ github.sha }}" . --no-logs
+      - name: Create or update the app
+        env:
+          SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+        run: |
+          echo "::add-mask::$SECRET"
+          az deployment group create -g "$RG" -n pdoom-app -f infra/main.bicep -o none             -p acrName="$ACR" image="$ACR.azurecr.io/pdoom:${{ github.sha }}"                databricksHost="${{ secrets.DATABRICKS_HOST }}" databricksClientId="${{ secrets.DATABRICKS_CLIENT_ID }}"                databricksClientSecret="$SECRET" warehouseId=197fb635fa67fd03

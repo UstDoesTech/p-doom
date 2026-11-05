@@ -1,56 +1,60 @@
+// The full p(doom) app (every player type) on Azure Container Apps, in the playground resource group.
+// Reuses the registry (builtonplayground) and Container Apps environment of the
+// Personal-UstOldfield-Built-On-Playground app; it creates a managed identity with AcrPull and the app.
 // Not deployed or validated. Review before use.
 param location string = resourceGroup().location
 param prefix string = 'pdoom'
+param acrName string = 'builtonplayground'
+param environmentName string = 'managedEnvironment-rgpersonalnustu-b3e2'
 param databricksHost string
 param databricksClientId string
 @secure()
 param databricksClientSecret string
 param warehouseId string
-param ucCatalog string = 'workspace'
+param ucCatalog string = 'pdoom'
 param ucSchema string = 'pdoom'
-param image string = 'mcr.microsoft.com/k8se/quickstart:latest'
+@description('Full image reference, <registry>.azurecr.io/pdoom:<tag>. Build it with az acr build first.')
+param image string
 
-resource logs 'Microsoft.OperationalInsights/workspaces@2022-10-01' = {
-  name: '${prefix}-logs'
-  location: location
-  properties: { sku: { name: 'PerGB2018' } }
+var acrPull = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7f951dda-4ed3-4680-a7ca-43fe172d538d')
+
+resource acr 'Microsoft.ContainerRegistry/registries@2023-07-01' existing = {
+  name: acrName
 }
 
-resource acr 'Microsoft.ContainerRegistry/registries@2023-07-01' = {
-  name: '${prefix}${uniqueString(resourceGroup().id)}'
-  location: location
-  sku: { name: 'Basic' }
-  properties: { adminUserEnabled: true }
+resource env 'Microsoft.App/managedEnvironments@2024-03-01' existing = {
+  name: environmentName
 }
 
-resource env 'Microsoft.App/managedEnvironments@2024-03-01' = {
-  name: '${prefix}-env'
+resource identity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
+  name: '${prefix}-id'
   location: location
+}
+
+resource pull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(acr.id, identity.id, acrPull)
+  scope: acr
   properties: {
-    appLogsConfiguration: {
-      destination: 'log-analytics'
-      logAnalyticsConfiguration: {
-        customerId: logs.properties.customerId
-        sharedKey: logs.listKeys().primarySharedKey
-      }
-    }
+    roleDefinitionId: acrPull
+    principalId: identity.properties.principalId
+    principalType: 'ServicePrincipal'
   }
 }
 
 resource app 'Microsoft.App/containerApps@2024-03-01' = {
   name: '${prefix}-app'
   location: location
+  dependsOn: [pull]
+  identity: {
+    type: 'UserAssigned'
+    userAssignedIdentities: { '${identity.id}': {} }
+  }
   properties: {
     managedEnvironmentId: env.id
     configuration: {
       ingress: { external: true, targetPort: 8000 }
-      registries: [
-        { server: acr.properties.loginServer, username: acr.listCredentials().username, passwordSecretRef: 'acr-password' }
-      ]
-      secrets: [
-        { name: 'acr-password', value: acr.listCredentials().passwords[0].value }
-        { name: 'databricks-secret', value: databricksClientSecret }
-      ]
+      registries: [{ server: acr.properties.loginServer, identity: identity.id }]
+      secrets: [{ name: 'databricks-secret', value: databricksClientSecret }]
     }
     template: {
       // The session store is in memory, so exactly one replica.

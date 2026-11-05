@@ -25,7 +25,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       CATALOG: pdoom_lakebase
-      WAREHOUSE: 4f084f656bc73157
+      WAREHOUSE: 197fb635fa67fd03
     steps:
       - uses: databricks/setup-cli@main
       - name: Register the database as a catalog

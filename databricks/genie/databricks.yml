@@ -9,14 +9,18 @@ bundle:
 variables:
   warehouse_id:
     description: SQL warehouse the space runs queries on
-    default: 4f084f656bc73157
+    default: 197fb635fa67fd03
   parent_path:
     description: Workspace folder that holds the space (not a Git folder)
     default: /Workspace/Shared/p-doom
 
+# The playground workspace, the same one as the Personal-UstOldfield-Built-On-Playground repo.
+# The CLI refuses to deploy if DATABRICKS_HOST in the environment points somewhere else.
 targets:
-  dev:
+  playground:
     default: true
+    workspace:
+      host: https://adb-7405613754241071.11.azuredatabricks.net
 
 resources:
   genie_spaces:

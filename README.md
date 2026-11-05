@@ -41,6 +41,29 @@ With `PDOOM_SINK=jsonl` nothing needs Databricks. For Databricks: set the `DATAB
 
 Mock arena sessions carry `engine = 'mock'`. Exclude them from every result.
 
+## Where it deploys
+
+Everything goes to the same places as the Personal-UstOldfield-Built-On-Playground repo:
+
+| Thing | Value |
+| --- | --- |
+| Databricks workspace | `https://adb-7405613754241071.11.azuredatabricks.net` (pinned as the `playground` target in both bundles) |
+| SQL warehouse | `built-on-sql`, `197fb635fa67fd03` |
+| Unity Catalog | catalog `pdoom` (the `app` workflow creates it if missing), schema `pdoom` |
+| Lakebase | project `pdoom`, created by the `lakebase` workflow |
+| Azure resource group | `rg-personal-n-ust-ust-built-on-playground` (westus2) |
+| Registry | the existing `builtonplayground`. No new registry is created. |
+| Container Apps environment | the existing `managedEnvironment-rgpersonalnustu-b3e2`. No new environment is created. |
+
+First-time order: `lakebase`, then `app` (catalog, schema, Databricks App, views), then `genie`, then `human`
+with `deploy=true`. Needed in this repo's settings:
+
+- Secrets (all set): `DATABRICKS_HOST`, `DATABRICKS_CLIENT_ID`, `DATABRICKS_CLIENT_SECRET` (a workspace-admin
+  service principal that may create catalogs), `HUMAN_DATABRICKS_CLIENT_ID`, `HUMAN_DATABRICKS_CLIENT_SECRET` (the Azure
+  app's own service principal), and `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID` (an app registration
+  with a federated credential for this repo and rights on the resource group).
+- Variables `RESOURCE_GROUP` and `ACR_NAME` are optional overrides of the playground defaults.
+
 ## Databricks App
 
 Run the `app` workflow (Actions, workflow_dispatch). It needs the three `DATABRICKS_*` secrets and a
@@ -67,7 +90,7 @@ project; the workflow does not grant that. One replica only, as above. The share
 ## Telemetry path
 
 The app writes only to Lakebase (`PDOOM_SINK=lakebase`). The Lakebase database is registered in Unity
-Catalog as `pdoom_lakebase` (`databricks postgres create-catalog`), and `workspace.pdoom` holds views over it:
+Catalog as `pdoom_lakebase` (`databricks postgres create-catalog`), and `pdoom.pdoom` holds views over it:
 `doom_sessions`, `doom_events`, `doom_decisions`, then the leaderboard and the metric view. Genie reads live
 rows with no copy. Lakehouse sync would give Delta history tables instead, but it needs a catalog on external
 storage, which this workspace does not have. `python -m pdoom.setup_db --lakebase-catalog pdoom_lakebase` builds the views

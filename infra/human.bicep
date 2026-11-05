@@ -1,17 +1,22 @@
-// The human-only p(doom) on Azure Container Apps. Not deployed from the session that wrote it;
-// CI runs `az bicep build` on it, which checks syntax only.
+// The human-only p(doom) on Azure Container Apps, in the playground resource group. It reuses the
+// registry (builtonplayground) and the Container Apps environment that the
+// Personal-UstOldfield-Built-On-Playground app already uses; it creates only a managed identity,
+// its AcrPull role on that registry, and the app. Not deployed by the session that wrote it; CI
+// runs `az bicep build` on it, which checks syntax only.
 //
-// Two passes, because the app needs an image that does not exist until the registry does:
-//   1. deploy with image = ''   -> registry, identity, environment (no app)
-//   2. az acr build, then deploy with image = '<registry>/pdoom-human:<tag>' -> adds the app
-// The deploying identity needs rights to create role assignments (Owner or User Access
-// Administrator on the resource group), since the app pulls from the registry as a managed
-// identity with AcrPull.
+// Order: build the image into the registry first (`az acr build`), then deploy this with
+// image = '<registry>/pdoom-human:<tag>'. The deploying identity needs rights to create role
+// assignments (Owner or User Access Administrator on the resource group), since the app pulls
+// from the registry as a managed identity with AcrPull.
 
 param location string = resourceGroup().location
 param prefix string = 'pdoomh'
-@description('Empty: create the registry and environment only. Set: also create the app.')
-param image string = ''
+@description('Existing registry in this resource group that the app pulls from.')
+param acrName string = 'builtonplayground'
+@description('Existing Container Apps environment in this resource group (shared with the playground app).')
+param environmentName string = 'managedEnvironment-rgpersonalnustu-b3e2'
+@description('Full image reference, <registry>.azurecr.io/pdoom-human:<tag>.')
+param image string
 
 param databricksHost string
 param databricksClientId string
@@ -31,17 +36,12 @@ param modelVersion string = 'dev'
 
 var acrPull = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7f951dda-4ed3-4680-a7ca-43fe172d538d')
 
-resource logs 'Microsoft.OperationalInsights/workspaces@2022-10-01' = {
-  name: '${prefix}-logs'
-  location: location
-  properties: { sku: { name: 'PerGB2018' }, retentionInDays: 30 }
+resource acr 'Microsoft.ContainerRegistry/registries@2023-07-01' existing = {
+  name: acrName
 }
 
-resource acr 'Microsoft.ContainerRegistry/registries@2023-07-01' = {
-  name: '${prefix}${uniqueString(resourceGroup().id)}'
-  location: location
-  sku: { name: 'Basic' }
-  properties: { adminUserEnabled: false }
+resource env 'Microsoft.App/managedEnvironments@2024-03-01' existing = {
+  name: environmentName
 }
 
 resource identity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
@@ -59,21 +59,7 @@ resource pull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   }
 }
 
-resource env 'Microsoft.App/managedEnvironments@2024-03-01' = {
-  name: '${prefix}-env'
-  location: location
-  properties: {
-    appLogsConfiguration: {
-      destination: 'log-analytics'
-      logAnalyticsConfiguration: {
-        customerId: logs.properties.customerId
-        sharedKey: logs.listKeys().primarySharedKey
-      }
-    }
-  }
-}
-
-resource app 'Microsoft.App/containerApps@2024-03-01' = if (!empty(image)) {
+resource app 'Microsoft.App/containerApps@2024-03-01' = {
   name: '${prefix}-app'
   location: location
   dependsOn: [pull]
@@ -89,8 +75,6 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = if (!empty(image)) {
         targetPort: 8000
         transport: 'auto'
         allowInsecure: false
-        // Sessions live in this container's memory, so one caller keeps meeting the same replica.
-        stickySessions: { affinity: 'sticky' }
       }
       registries: [{ server: acr.properties.loginServer, identity: identity.id }]
       secrets: [{ name: 'databricks-secret', value: databricksClientSecret }]
@@ -135,4 +119,4 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = if (!empty(image)) {
 
 output registry string = acr.name
 output registryServer string = acr.properties.loginServer
-output url string = empty(image) ? '' : 'https://${app!.properties.configuration.ingress.fqdn}'
+output url string = 'https://${app.properties.configuration.ingress.fqdn}'

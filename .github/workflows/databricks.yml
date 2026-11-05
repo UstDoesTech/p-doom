@@ -8,7 +8,7 @@ on:
     inputs:
       catalog:
         description: Existing catalog that will hold the schema
-        default: workspace
+        default: pdoom
       schema:
         default: pdoom
   push:
@@ -47,7 +47,7 @@ jobs:
         run: |
           mkdir -p ../app-dist
           databricks bundle validate \
-            --var="warehouse_id=4f084f656bc73157" \
-            --var="catalog=${{ inputs.catalog || 'workspace' }}" \
+            --var="warehouse_id=197fb635fa67fd03" \
+            --var="catalog=${{ inputs.catalog || 'pdoom' }}" \
             --var="schema=${{ inputs.schema || 'pdoom' }}" \
             --var="app_principal=${DATABRICKS_CLIENT_ID}"

@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-CATALOG, SCHEMA = "workspace", "pdoom"
+CATALOG, SCHEMA = "pdoom", "pdoom"
 FQ = f"{CATALOG}.{SCHEMA}"
 
 

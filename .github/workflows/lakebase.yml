@@ -6,7 +6,7 @@ on:
     inputs:
       project_id: { default: pdoom }
       database: { default: pdoom }
-      catalog: { default: workspace }
+      catalog: { default: pdoom }
       schema: { default: pdoom }
   push:
     branches: [feat/lakebase, feat/lakebase-sink]
@@ -88,7 +88,7 @@ jobs:
           existing=$(databricks postgres list-cdf-configs "$D" -o json 2>&1)
           echo "::notice title=cdf configs before::$(printf '%s' "$existing" | tr '\n' ' ' | cut -c1-500)"
           if ! printf '%s' "$existing" | jq -e 'length>0' >/dev/null 2>&1; then
-            out=$(databricks postgres create-cdf-config "$D" "${{ inputs.catalog || 'workspace' }}" "${{ inputs.schema || 'pdoom' }}" pdoom --cdf-config-id pdoom_sync -o json 2>&1)
+            out=$(databricks postgres create-cdf-config "$D" "${{ inputs.catalog || 'pdoom' }}" "${{ inputs.schema || 'pdoom' }}" pdoom --cdf-config-id pdoom_sync -o json 2>&1)
             echo "::notice title=create-cdf-config exit=$?::$(printf '%s' "$out" | tr '\n' ' ' | cut -c1-1200)"
           fi
           sleep 45

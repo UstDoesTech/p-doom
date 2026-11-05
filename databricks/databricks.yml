@@ -6,7 +6,7 @@ bundle:
 variables:
   catalog:
     description: Existing catalog that will hold the schema
-    default: workspace
+    default: pdoom
   schema:
     default: pdoom
   app_principal:
@@ -39,9 +39,13 @@ sync:
   include:
     - ../app-dist/**
 
+# The playground workspace, the same one as the Personal-UstOldfield-Built-On-Playground repo.
+# The CLI refuses to deploy if DATABRICKS_HOST in the environment points somewhere else.
 targets:
-  dev:
+  playground:
     default: true
+    workspace:
+      host: https://adb-7405613754241071.11.azuredatabricks.net
 
 resources:
   schemas:
@@ -85,4 +89,4 @@ resources:
             database: ${var.lakebase_database}
             permission: CAN_CONNECT_AND_CREATE
 # The app's service principal also needs USE CATALOG on the catalog, which a bundle in this
-# schema cannot grant:   GRANT USE CATALOG ON CATALOG workspace TO `<application id>`;
+# schema cannot grant:   GRANT USE CATALOG ON CATALOG pdoom TO `<application id>`;

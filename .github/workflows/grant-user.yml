@@ -9,9 +9,9 @@ on:
       user:
         description: Databricks user name (email) to grant
         default: uoldfield@gmail.com
-      catalog: { default: workspace }
+      catalog: { default: pdoom }
       schema: { default: pdoom }
-      warehouse_id: { default: 4f084f656bc73157 }
+      warehouse_id: { default: 197fb635fa67fd03 }
       app_name: { default: pdoom }
   push:
     branches: [chore/grant-user]
@@ -28,9 +28,9 @@ jobs:
       DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
       DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
       USER_NAME: ${{ inputs.user || 'uoldfield@gmail.com' }}
-      CATALOG: ${{ inputs.catalog || 'workspace' }}
+      CATALOG: ${{ inputs.catalog || 'pdoom' }}
       SCHEMA: ${{ inputs.schema || 'pdoom' }}
-      WAREHOUSE: ${{ inputs.warehouse_id || '4f084f656bc73157' }}
+      WAREHOUSE: ${{ inputs.warehouse_id || '197fb635fa67fd03' }}
       APP_NAME: ${{ inputs.app_name || 'pdoom' }}
     steps:
       - uses: actions/checkout@v4

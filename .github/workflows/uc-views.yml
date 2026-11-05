@@ -11,7 +11,7 @@ env:
   DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
   DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
   DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
-  WAREHOUSE: 4f084f656bc73157
+  WAREHOUSE: 197fb635fa67fd03
 jobs:
   views:
     runs-on: ubuntu-latest
@@ -24,7 +24,7 @@ jobs:
         working-directory: backend
         env:
           PDOOM_WAREHOUSE_ID: ${{ env.WAREHOUSE }}
-          PDOOM_UC_CATALOG: workspace
+          PDOOM_UC_CATALOG: pdoom
           PDOOM_UC_SCHEMA: pdoom
           PDOOM_UC_LAKEBASE_CATALOG: pdoom_lakebase
         run: |
@@ -38,9 +38,9 @@ jobs:
         if: always()
         run: |
           q() { databricks api post /api/2.0/sql/statements --json "$(jq -nc --arg w "$WAREHOUSE" --arg s "$1" '{warehouse_id:$w,wait_timeout:"50s",statement:$s}')" | jq -c '{state:.status.state, err:.status.error.message, rows:.result.data_array}' | cut -c1-900; }
-          echo "::notice title=tables::$(q 'SELECT table_name, table_type FROM workspace.information_schema.tables WHERE table_schema = '"'pdoom'"' ORDER BY 1')"
-          echo "::notice title=view types::$(q 'DESCRIBE workspace.pdoom.doom_decisions')"
-          echo "::notice title=sessions view::$(q 'SELECT player_type, engine, outcome, count(*) FROM workspace.pdoom.doom_sessions GROUP BY ALL')"
-          echo "::notice title=leaderboard::$(q 'SELECT player_type, engine, attempts, deaths, p_doom FROM workspace.pdoom.doom_leaderboard')"
-          echo "::notice title=metric view::$(q 'SELECT player_type, MEASURE(attempts), MEASURE(p_doom) FROM workspace.pdoom.doom_metrics GROUP BY ALL')"
-          echo "::notice title=decisions::$(q 'SELECT player_type, count(*), max(ts) FROM workspace.pdoom.doom_decisions GROUP BY ALL')"
+          echo "::notice title=tables::$(q 'SELECT table_name, table_type FROM pdoom.information_schema.tables WHERE table_schema = '"'pdoom'"' ORDER BY 1')"
+          echo "::notice title=view types::$(q 'DESCRIBE pdoom.pdoom.doom_decisions')"
+          echo "::notice title=sessions view::$(q 'SELECT player_type, engine, outcome, count(*) FROM pdoom.pdoom.doom_sessions GROUP BY ALL')"
+          echo "::notice title=leaderboard::$(q 'SELECT player_type, engine, attempts, deaths, p_doom FROM pdoom.pdoom.doom_leaderboard')"
+          echo "::notice title=metric view::$(q 'SELECT player_type, MEASURE(attempts), MEASURE(p_doom) FROM pdoom.pdoom.doom_metrics GROUP BY ALL')"
+          echo "::notice title=decisions::$(q 'SELECT player_type, count(*), max(ts) FROM pdoom.pdoom.doom_decisions GROUP BY ALL')"

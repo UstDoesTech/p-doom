@@ -15,7 +15,7 @@ env:
   DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
   DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
   DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
-  PDOOM_WAREHOUSE_ID: 4f084f656bc73157
+  PDOOM_WAREHOUSE_ID: 197fb635fa67fd03
 jobs:
   probe:
     runs-on: ubuntu-latest
@@ -51,7 +51,7 @@ jobs:
           except Exception as exc:  # noqa: BLE001
               note("rest raw error", f"{type(exc).__name__}: {exc}")
 
-          sql = SqlRunner(os.environ["PDOOM_WAREHOUSE_ID"], "workspace", "pdoom")
+          sql = SqlRunner(os.environ["PDOOM_WAREHOUSE_ID"], "pdoom", "pdoom")
           for name, player in (
               ("rest only", AiDecidePlayer(api=api)),
               ("sql only", AiDecidePlayer(sql)),

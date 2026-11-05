@@ -6,7 +6,7 @@
 # Needs the web app built into web/dist first (npm run build, with the engine files already in
 # web/public/doom so Vite copies them), or this script copies them in afterwards.
 set -euo pipefail
-engine=$1; out=$2; catalog=${3:-workspace}; schema=${4:-pdoom}
+engine=$1; out=$2; catalog=${3:-pdoom}; schema=${4:-pdoom}
 root=$(cd "$(dirname "$0")/.." && pwd)
 
 rm -rf "$out"; mkdir -p "$out/static/doom"

@@ -10,11 +10,11 @@ on:
         type: boolean
         default: true
       catalog:
-        default: workspace
+        default: pdoom
       schema:
         default: pdoom
       warehouse_id:
-        default: 4f084f656bc73157
+        default: 197fb635fa67fd03
       app_name:
         default: pdoom
   push:
@@ -44,7 +44,7 @@ jobs:
         run: npm ci && npm run build
       - name: Assemble the app directory
         run: |
-          scripts/build_app.sh engine-out app-dist "${{ inputs.catalog || 'workspace' }}" "${{ inputs.schema || 'pdoom' }}"
+          scripts/build_app.sh engine-out app-dist "${{ inputs.catalog || 'pdoom' }}" "${{ inputs.schema || 'pdoom' }}"
           echo "::notice title=app dir::$(du -sh app-dist | cut -f1) $(ls app-dist | paste -sd, -)"
       - uses: actions/upload-artifact@v4
         with: { name: app-dir, path: app-dist }
@@ -57,9 +57,9 @@ jobs:
       DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
       DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
       DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
-      CATALOG: ${{ inputs.catalog || 'workspace' }}
+      CATALOG: ${{ inputs.catalog || 'pdoom' }}
       SCHEMA: ${{ inputs.schema || 'pdoom' }}
-      WAREHOUSE: ${{ inputs.warehouse_id || '4f084f656bc73157' }}
+      WAREHOUSE: ${{ inputs.warehouse_id || '197fb635fa67fd03' }}
       APP_NAME: ${{ inputs.app_name || 'pdoom' }}
     steps:
       - uses: actions/checkout@v4
@@ -74,6 +74,13 @@ jobs:
           [ -n "$host" ] && [ "$host" != null ]
           sed -i "s/__PG_HOST__/$host/" app-dist/app.yaml
           echo "::notice title=lakebase host::$host"
+      - name: Create the catalog if it does not exist
+        run: |
+          set +e
+          stmt="CREATE CATALOG IF NOT EXISTS \`$CATALOG\` COMMENT 'p(doom) telemetry'"
+          r=$(databricks api post /api/2.0/sql/statements --json "$(jq -nc --arg w "$WAREHOUSE" --arg s "$stmt" '{warehouse_id:$w,wait_timeout:"50s",statement:$s}')" | jq -c '{state:.status.state, err:.status.error.message}')
+          echo "::notice title=create catalog::${r}"
+          printf '%s' "$r" | jq -e '.state=="SUCCEEDED"' >/dev/null
       - name: Deploy bundle
         working-directory: databricks
         run: |
@@ -154,7 +161,7 @@ jobs:
     uses: ./.github/workflows/app-verify.yml
     secrets: inherit
     with:
-      catalog: ${{ inputs.catalog || 'workspace' }}
+      catalog: ${{ inputs.catalog || 'pdoom' }}
       schema: ${{ inputs.schema || 'pdoom' }}
-      warehouse_id: ${{ inputs.warehouse_id || '4f084f656bc73157' }}
+      warehouse_id: ${{ inputs.warehouse_id || '197fb635fa67fd03' }}
       app_name: ${{ inputs.app_name || 'pdoom' }}

@@ -37,7 +37,7 @@
   "data_sources": {
     "tables": [
       {
-        "identifier": "workspace.pdoom.doom_decisions",
+        "identifier": "pdoom.pdoom.doom_decisions",
         "column_configs": [
           {
             "column_name": "intent",
@@ -50,7 +50,7 @@
         ]
       },
       {
-        "identifier": "workspace.pdoom.doom_games",
+        "identifier": "pdoom.pdoom.doom_games",
         "column_configs": [
           {
             "column_name": "engine",
@@ -76,7 +76,7 @@
         ]
       },
       {
-        "identifier": "workspace.pdoom.doom_leaderboard",
+        "identifier": "pdoom.pdoom.doom_leaderboard",
         "column_configs": [
           {
             "column_name": "player_type",
@@ -86,10 +86,10 @@
         ]
       },
       {
-        "identifier": "workspace.pdoom.doom_seed_outcomes"
+        "identifier": "pdoom.pdoom.doom_seed_outcomes"
       },
       {
-        "identifier": "workspace.pdoom.doom_sessions",
+        "identifier": "pdoom.pdoom.doom_sessions",
         "column_configs": [
           {
             "column_name": "outcome",
@@ -100,7 +100,7 @@
     ],
     "metric_views": [
       {
-        "identifier": "workspace.pdoom.doom_metrics"
+        "identifier": "pdoom.pdoom.doom_metrics"
       }
     ]
   },
@@ -112,7 +112,7 @@
           "Which machine players fail the most decisions?"
         ],
         "sql": [
-          "SELECT player_type, COUNT(*) AS games, AVG(decision_failure_rate) AS failure_rate FROM workspace.pdoom.doom_games WHERE engine = 'wasm' AND player_type <> 'human' AND status <> 'open' GROUP BY player_type ORDER BY failure_rate DESC"
+          "SELECT player_type, COUNT(*) AS games, AVG(decision_failure_rate) AS failure_rate FROM pdoom.pdoom.doom_games WHERE engine = 'wasm' AND player_type <> 'human' AND status <> 'open' GROUP BY player_type ORDER BY failure_rate DESC"
         ]
       },
       {
@@ -121,7 +121,7 @@
           "What is p(doom) for each player type?"
         ],
         "sql": [
-          "SELECT player_type, MEASURE(attempts) AS attempts, MEASURE(p_doom) AS p_doom FROM workspace.pdoom.doom_metrics WHERE engine = 'wasm' GROUP BY player_type ORDER BY p_doom"
+          "SELECT player_type, MEASURE(attempts) AS attempts, MEASURE(p_doom) AS p_doom FROM pdoom.pdoom.doom_metrics WHERE engine = 'wasm' GROUP BY player_type ORDER BY p_doom"
         ]
       },
       {
@@ -130,7 +130,7 @@
           "Which player types are significantly better than the rest?"
         ],
         "sql": [
-          "SELECT player_type, attempts, p_doom, p_doom_low, p_doom_high FROM workspace.pdoom.doom_leaderboard WHERE engine = 'wasm' ORDER BY p_doom"
+          "SELECT player_type, attempts, p_doom, p_doom_low, p_doom_high FROM pdoom.pdoom.doom_leaderboard WHERE engine = 'wasm' ORDER BY p_doom"
         ]
       },
       {
@@ -139,7 +139,7 @@
           "How many games were abandoned, stopped or lost, by player type?"
         ],
         "sql": [
-          "SELECT player_type, MEASURE(games_started) AS games_started, MEASURE(aborted) AS aborted, MEASURE(abandoned) AS abandoned, MEASURE(lost) AS lost FROM workspace.pdoom.doom_metrics WHERE engine = 'wasm' GROUP BY player_type"
+          "SELECT player_type, MEASURE(games_started) AS games_started, MEASURE(aborted) AS aborted, MEASURE(abandoned) AS abandoned, MEASURE(lost) AS lost FROM pdoom.pdoom.doom_metrics WHERE engine = 'wasm' GROUP BY player_type"
         ]
       },
       {
@@ -148,7 +148,7 @@
           "On how many seeds did at least one machine player clear the level?"
         ],
         "sql": [
-          "SELECT level, mode, COUNT(*) AS seeds, SUM(cleared_any) AS seeds_cleared, AVG(cleared_any) AS any_clear_rate FROM workspace.pdoom.doom_seed_outcomes WHERE engine = 'wasm' GROUP BY level, mode"
+          "SELECT level, mode, COUNT(*) AS seeds, SUM(cleared_any) AS seeds_cleared, AVG(cleared_any) AS any_clear_rate FROM pdoom.pdoom.doom_seed_outcomes WHERE engine = 'wasm' GROUP BY level, mode"
         ]
       }
     ],

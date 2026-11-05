@@ -4,15 +4,15 @@ name: app-verify
 on:
   workflow_call:
     inputs:
-      catalog: { type: string, default: workspace }
+      catalog: { type: string, default: pdoom }
       schema: { type: string, default: pdoom }
-      warehouse_id: { type: string, default: 4f084f656bc73157 }
+      warehouse_id: { type: string, default: 197fb635fa67fd03 }
       app_name: { type: string, default: pdoom }
   workflow_dispatch:
     inputs:
-      catalog: { default: workspace }
+      catalog: { default: pdoom }
       schema: { default: pdoom }
-      warehouse_id: { default: 4f084f656bc73157 }
+      warehouse_id: { default: 197fb635fa67fd03 }
       app_name: { default: pdoom }
 
 permissions:
@@ -25,9 +25,9 @@ jobs:
       DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
       DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
       DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
-      CATALOG: ${{ inputs.catalog || 'workspace' }}
+      CATALOG: ${{ inputs.catalog || 'pdoom' }}
       SCHEMA: ${{ inputs.schema || 'pdoom' }}
-      WAREHOUSE: ${{ inputs.warehouse_id || '4f084f656bc73157' }}
+      WAREHOUSE: ${{ inputs.warehouse_id || '197fb635fa67fd03' }}
       APP_NAME: ${{ inputs.app_name || 'pdoom' }}
     steps:
       - uses: actions/checkout@v4
