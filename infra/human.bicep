@@ -9,7 +9,8 @@
 // assignments (Owner or User Access Administrator on the resource group), since the app pulls
 // from the registry as a managed identity with AcrPull.
 
-param location string = resourceGroup().location
+@description('Must be the region of the existing environment and registry, which is not the resource group region (uksouth).')
+param location string = 'westus2'
 param prefix string = 'pdoomh'
 @description('Existing registry in this resource group that the app pulls from.')
 param acrName string = 'builtonplayground'
@@ -43,6 +44,7 @@ resource acr 'Microsoft.ContainerRegistry/registries@2023-07-01' existing = {
 resource env 'Microsoft.App/managedEnvironments@2024-03-01' existing = {
   name: environmentName
 }
+
 
 resource identity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
   name: '${prefix}-id'

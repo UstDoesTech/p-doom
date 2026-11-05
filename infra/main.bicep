@@ -2,7 +2,8 @@
 // Reuses the registry (builtonplayground) and Container Apps environment of the
 // Personal-UstOldfield-Built-On-Playground app; it creates a managed identity with AcrPull and the app.
 // Not deployed or validated. Review before use.
-param location string = resourceGroup().location
+@description('Must be the region of the existing environment and registry, which is not the resource group region (uksouth).')
+param location string = 'westus2'
 param prefix string = 'pdoom'
 param acrName string = 'builtonplayground'
 param environmentName string = 'managedEnvironment-rgpersonalnustu-b3e2'
@@ -25,6 +26,7 @@ resource acr 'Microsoft.ContainerRegistry/registries@2023-07-01' existing = {
 resource env 'Microsoft.App/managedEnvironments@2024-03-01' existing = {
   name: environmentName
 }
+
 
 resource identity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
   name: '${prefix}-id'
