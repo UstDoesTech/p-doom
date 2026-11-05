@@ -104,6 +104,10 @@ class PgSink:
             password=self.tokens.get(),
             sslmode="require",
             connect_timeout=15,
+            # Autocommit, so that conn.transaction() is a real BEGIN/COMMIT. Without it ping() (SELECT 1)
+            # leaves a transaction open, every later transaction() block becomes a savepoint inside it,
+            # and writes the app reports as accepted are never committed.
+            autocommit=True,
         )
         self._conn_at = time.time()
         return conn

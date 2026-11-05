@@ -126,6 +126,8 @@ def test_events_and_decisions_written_in_one_transaction_per_batch():
     assert [len(v) for _, v in conns[0].calls] == [BATCH, 1, 1]
     assert len(conns) == 1  # one connection reused
     assert seen[0]["sslmode"] == "require" and seen[0]["password"] == "tok1"
+    # transaction() must be a real commit, not a savepoint inside the transaction ping() opened
+    assert seen[0]["autocommit"] is True
 
 
 def test_reconnects_once_with_a_fresh_token_after_a_failure():
