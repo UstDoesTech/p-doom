@@ -74,13 +74,17 @@ jobs:
           [ -n "$host" ] && [ "$host" != null ]
           sed -i "s/__PG_HOST__/$host/" app-dist/app.yaml
           echo "::notice title=lakebase host::$host"
-      - name: Create the catalog if it does not exist
+      - name: Check the catalog exists
         run: |
-          set +e
-          stmt="CREATE CATALOG IF NOT EXISTS \`$CATALOG\` COMMENT 'p(doom) telemetry'"
-          r=$(databricks api post /api/2.0/sql/statements --json "$(jq -nc --arg w "$WAREHOUSE" --arg s "$stmt" '{warehouse_id:$w,wait_timeout:"50s",statement:$s}')" | jq -c '{state:.status.state, err:.status.error.message}')
-          echo "::notice title=create catalog::${r}"
-          printf '%s' "$r" | jq -e '.state=="SUCCEEDED"' >/dev/null
+          # This metastore has no root storage, so CREATE CATALOG fails without a MANAGED LOCATION.
+          # Create the catalog once by hand (in the UI, with Default Storage) and grant the service
+          # principal USE CATALOG, CREATE SCHEMA and CREATE TABLE on it.
+          if out=$(databricks catalogs get "$CATALOG" -o json 2>&1); then
+            echo "::notice title=catalog::$CATALOG exists, owner $(printf '%s' "$out" | jq -r .owner)"
+          else
+            echo "::error title=catalog::$CATALOG does not exist or is not visible to this service principal: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-400)"
+            exit 1
+          fi
       - name: Deploy bundle
         working-directory: databricks
         run: |

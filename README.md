@@ -49,7 +49,7 @@ Everything goes to the same places as the Personal-UstOldfield-Built-On-Playgrou
 | --- | --- |
 | Databricks workspace | `https://adb-7405613754241071.11.azuredatabricks.net` (pinned as the `playground` target in both bundles) |
 | SQL warehouse | `built-on-sql`, `197fb635fa67fd03` |
-| Unity Catalog | catalog `pdoom` (the `app` workflow creates it if missing), schema `pdoom` |
+| Unity Catalog | catalog `pdoom` (created by hand; the `app` workflow only checks it exists), schema `pdoom` |
 | Lakebase | project `pdoom`, created by the `lakebase` workflow |
 | Azure resource group | `rg-personal-n-ust-ust-built-on-playground` (westus2) |
 | Registry | the existing `builtonplayground`. No new registry is created. |
